@@ -141,8 +141,13 @@ class RemoteTouchAccessibilityService : AccessibilityService() {
         }
 
         fun performScrollUp(onComplete: (() -> Unit)? = null): Boolean {
-            val width = ScreenCaptureService.screenWidth.toFloat()
-            val height = ScreenCaptureService.screenHeight.toFloat()
+            val service = instance ?: run {
+                Log.w(TAG, "Cannot perform scroll: RemoteTouchAccessibilityService not running/enabled")
+                return false
+            }
+            val metrics = service.resources.displayMetrics
+            val width = if (ScreenCaptureService.screenWidth > 0) ScreenCaptureService.screenWidth.toFloat() else metrics.widthPixels.toFloat()
+            val height = if (ScreenCaptureService.screenHeight > 0) ScreenCaptureService.screenHeight.toFloat() else metrics.heightPixels.toFloat()
             val midX = width * 0.5f
             val startY = height * 0.35f
             val endY = height * 0.75f
@@ -150,8 +155,13 @@ class RemoteTouchAccessibilityService : AccessibilityService() {
         }
 
         fun performScrollDown(onComplete: (() -> Unit)? = null): Boolean {
-            val width = ScreenCaptureService.screenWidth.toFloat()
-            val height = ScreenCaptureService.screenHeight.toFloat()
+            val service = instance ?: run {
+                Log.w(TAG, "Cannot perform scroll: RemoteTouchAccessibilityService not running/enabled")
+                return false
+            }
+            val metrics = service.resources.displayMetrics
+            val width = if (ScreenCaptureService.screenWidth > 0) ScreenCaptureService.screenWidth.toFloat() else metrics.widthPixels.toFloat()
+            val height = if (ScreenCaptureService.screenHeight > 0) ScreenCaptureService.screenHeight.toFloat() else metrics.heightPixels.toFloat()
             val midX = width * 0.5f
             val startY = height * 0.75f
             val endY = height * 0.35f
