@@ -710,22 +710,16 @@ fun MainScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text("Formato:", fontSize = 11.sp, color = Color.Gray)
-                        FilterChip(
-                            selected = selectedFitMode == ScreenshotFitMode.ROTATE_90_FILL,
-                            onClick = {
-                                selectedFitMode = ScreenshotFitMode.ROTATE_90_FILL
-                                screenshotManager.fitMode = ScreenshotFitMode.ROTATE_90_FILL
-                            },
-                            label = { Text("Ruota 90° (Pieno Schermo)", fontSize = 11.sp) }
-                        )
-                        FilterChip(
-                            selected = selectedFitMode == ScreenshotFitMode.FIT_CENTER,
-                            onClick = {
-                                selectedFitMode = ScreenshotFitMode.FIT_CENTER
-                                screenshotManager.fitMode = ScreenshotFitMode.FIT_CENTER
-                            },
-                            label = { Text("Adatta Orizzontale", fontSize = 11.sp) }
-                        )
+                        ScreenshotFitMode.values().forEach { mode ->
+                            FilterChip(
+                                selected = selectedFitMode == mode,
+                                onClick = {
+                                    selectedFitMode = mode
+                                    screenshotManager.fitMode = mode
+                                },
+                                label = { Text(mode.label, fontSize = 11.sp) }
+                            )
+                        }
                     }
 
                     // Tasti Su/Giù action mode selector

@@ -20,9 +20,10 @@ import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.atomic.AtomicBoolean
 
-enum class ScreenshotFitMode {
-    ROTATE_90_FILL, // Ruota 90° e scala (riempie lo schermo a 960x432, ideale se si impugna M5Paper in verticale)
-    FIT_CENTER      // Centrato orizzontale in 960x540 con sfondo bianco
+enum class ScreenshotFitMode(val label: String) {
+    FIT_RIGHT("Allinea a Destra"), // Allineato a destra sul display 960x540 con sfondo bianco (default)
+    FIT_CENTER("Centrato"),        // Centrato orizzontale in 960x540 con sfondo bianco
+    ROTATE_90_FILL("Ruota 90° (Pieno Schermo)") // Ruota 90° e scala (riempie lo schermo a 960x432)
 }
 
 sealed class ScreenshotTransferState {
@@ -48,7 +49,7 @@ class ScreenshotManager(private val usbController: UsbSerialController) {
     private val captureMutex = Mutex()
     private val hasPendingCapture = AtomicBoolean(false)
 
-    var fitMode: ScreenshotFitMode = ScreenshotFitMode.ROTATE_90_FILL
+    var fitMode: ScreenshotFitMode = ScreenshotFitMode.FIT_RIGHT
     var jpegQuality: Int = 80 // 80% gives sharp clarity and compact size (~40-70 KB)
 
     suspend fun captureAndSend(): Boolean {
@@ -170,6 +171,7 @@ class ScreenshotManager(private val usbController: UsbSerialController) {
                     source
                 }
             }
+            ScreenshotFitMode.FIT_RIGHT,
             ScreenshotFitMode.FIT_CENTER -> source
         }
 
@@ -183,7 +185,11 @@ class ScreenshotManager(private val usbController: UsbSerialController) {
         )
         val scaledW = (transformed.width * scale).toInt()
         val scaledH = (transformed.height * scale).toInt()
-        val posX = (TARGET_WIDTH - scaledW) / 2f
+        val posX = when (mode) {
+            ScreenshotFitMode.FIT_RIGHT -> (TARGET_WIDTH - scaledW).toFloat()
+            ScreenshotFitMode.FIT_CENTER,
+            ScreenshotFitMode.ROTATE_90_FILL -> (TARGET_WIDTH - scaledW) / 2f
+        }
         val posY = (TARGET_HEIGHT - scaledH) / 2f
 
         val paint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -221,6 +227,7 @@ class ScreenshotManager(private val usbController: UsbSerialController) {
                     Triple(phoneWidth, phoneHeight, false)
                 }
             }
+            ScreenshotFitMode.FIT_RIGHT,
             ScreenshotFitMode.FIT_CENTER -> Triple(phoneWidth, phoneHeight, false)
         }
 
@@ -230,7 +237,11 @@ class ScreenshotManager(private val usbController: UsbSerialController) {
         )
         val scaledW = (transW * scale)
         val scaledH = (transH * scale)
-        val posX = (TARGET_WIDTH - scaledW) / 2f
+        val posX = when (fitMode) {
+            ScreenshotFitMode.FIT_RIGHT -> (TARGET_WIDTH - scaledW)
+            ScreenshotFitMode.FIT_CENTER,
+            ScreenshotFitMode.ROTATE_90_FILL -> (TARGET_WIDTH - scaledW) / 2f
+        }
         val posY = (TARGET_HEIGHT - scaledH) / 2f
 
         // Check if inside bounds
