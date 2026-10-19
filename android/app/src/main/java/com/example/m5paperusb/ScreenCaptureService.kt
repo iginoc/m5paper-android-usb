@@ -62,6 +62,12 @@ class ScreenCaptureService : Service() {
             }
             context.startService(intent)
         }
+
+        val screenWidth: Int
+            get() = instance?.displayWidth ?: android.content.res.Resources.getSystem().displayMetrics.widthPixels
+
+        val screenHeight: Int
+            get() = instance?.displayHeight ?: android.content.res.Resources.getSystem().displayMetrics.heightPixels
     }
 
     private var mediaProjection: MediaProjection? = null

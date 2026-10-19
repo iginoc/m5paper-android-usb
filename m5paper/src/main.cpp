@@ -34,6 +34,7 @@ int historyCount = 0;
 int updateCounter = 0;
 unsigned long lastHeartbeat = 0;
 unsigned long lastTouchTime = 0;
+bool wasFingerDown = false;
 String lastTouchInfo = "None";
 
 // Helper: battery percentage calculation
@@ -296,7 +297,7 @@ void processCommand(const String& cmd) {
 void setup() {
     M5.begin();
     M5.EPD.SetRotation(0); // 960x540 landscape
-    M5.TP.SetRotation(90);
+    M5.TP.SetRotation(0);  // 960x540 landscape touch
     M5.EPD.Clear(true);
     M5.RTC.begin();
     M5.SHT30.Begin();
@@ -360,26 +361,33 @@ void loop() {
         if (!M5.TP.isFingerUp()) {
             tp_finger_t finger = M5.TP.readFinger(0);
             
-            // Debounce touch events (at least 200ms apart)
-            if (millis() - lastTouchTime > 200) {
+            // Debounce touch events and detect edge
+            if (!wasFingerDown || (millis() - lastTouchTime > 350)) {
                 lastTouchTime = millis();
+                wasFingerDown = true;
 
                 int screenX = finger.x;
                 int screenY = finger.y;
 
-                char touchStr[48];
-                snprintf(touchStr, sizeof(touchStr), "TOUCH:x=%d,y=%d,size=%d", screenX, screenY, finger.size);
+                // Clamp to screen bounds
+                if (screenX < 0) screenX = 0;
+                if (screenX >= 960) screenX = 959;
+                if (screenY < 0) screenY = 0;
+                if (screenY >= 540) screenY = 539;
+
+                char touchStr[64];
+                snprintf(touchStr, sizeof(touchStr), "TOUCH:x=%d,y=%d,size=%d,scr=%d", 
+                         screenX, screenY, finger.size, isShowingScreenshot ? 1 : 0);
                 Serial.println(touchStr);
 
                 lastTouchInfo = String("X:") + screenX + " Y:" + screenY;
-                if (isShowingScreenshot) {
-                    isShowingScreenshot = false;
-                    renderUI(true);
-                    Serial.println("EVENT:DASHBOARD");
-                } else {
+                // During screenshot display, do NOT exit screenshot mode or overwrite screen with dashboard!
+                if (!isShowingScreenshot) {
                     renderUI(false);
                 }
             }
+        } else {
+            wasFingerDown = false;
         }
         M5.TP.flush();
     }

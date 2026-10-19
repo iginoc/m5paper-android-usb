@@ -17,6 +17,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 
+import kotlinx.coroutines.sync.Mutex
+import java.util.concurrent.atomic.AtomicBoolean
+
 enum class ScreenshotFitMode {
     ROTATE_90_FILL, // Ruota 90° e scala (riempie lo schermo a 960x432, ideale se si impugna M5Paper in verticale)
     FIT_CENTER      // Centrato orizzontale in 960x540 con sfondo bianco
@@ -42,10 +45,32 @@ class ScreenshotManager(private val usbController: UsbSerialController) {
     private val _transferState = MutableStateFlow<ScreenshotTransferState>(ScreenshotTransferState.Idle)
     val transferState: StateFlow<ScreenshotTransferState> = _transferState.asStateFlow()
 
+    private val captureMutex = Mutex()
+    private val hasPendingCapture = AtomicBoolean(false)
+
     var fitMode: ScreenshotFitMode = ScreenshotFitMode.ROTATE_90_FILL
     var jpegQuality: Int = 80 // 80% gives sharp clarity and compact size (~40-70 KB)
 
     suspend fun captureAndSend(): Boolean {
+        if (!captureMutex.tryLock()) {
+            hasPendingCapture.set(true)
+            Log.d(TAG, "Trasferimento screenshot già in corso: programmato refresh successivo.")
+            return true
+        }
+
+        try {
+            var success = doCaptureAndSend()
+            while (hasPendingCapture.getAndSet(false)) {
+                kotlinx.coroutines.delay(250)
+                success = doCaptureAndSend()
+            }
+            return success
+        } finally {
+            captureMutex.unlock()
+        }
+    }
+
+    private suspend fun doCaptureAndSend(): Boolean {
         if (usbController.connectionStatus.value !is ConnectionStatus.Connected) {
             _transferState.value = ScreenshotTransferState.Error("M5Paper non collegato via USB")
             return false
@@ -176,5 +201,54 @@ class ScreenshotManager(private val usbController: UsbSerialController) {
         val stream = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
         return stream.toByteArray()
+    }
+
+    /**
+     * Maps M5Paper touch coordinates (0..960, 0..540) back to the original smartphone screen coordinates.
+     * Returns Pair(phoneX, phoneY), or null if the touch fell outside the scaled image bounds.
+     */
+    fun mapM5PaperTouchToPhone(
+        touchX: Int,
+        touchY: Int,
+        phoneWidth: Int = ScreenCaptureService.screenWidth,
+        phoneHeight: Int = ScreenCaptureService.screenHeight
+    ): Pair<Float, Float>? {
+        val (transW, transH, isRotated) = when (fitMode) {
+            ScreenshotFitMode.ROTATE_90_FILL -> {
+                if (phoneWidth < phoneHeight) {
+                    Triple(phoneHeight, phoneWidth, true)
+                } else {
+                    Triple(phoneWidth, phoneHeight, false)
+                }
+            }
+            ScreenshotFitMode.FIT_CENTER -> Triple(phoneWidth, phoneHeight, false)
+        }
+
+        val scale = minOf(
+            TARGET_WIDTH.toFloat() / transW,
+            TARGET_HEIGHT.toFloat() / transH
+        )
+        val scaledW = (transW * scale)
+        val scaledH = (transH * scale)
+        val posX = (TARGET_WIDTH - scaledW) / 2f
+        val posY = (TARGET_HEIGHT - scaledH) / 2f
+
+        // Check if inside bounds
+        if (touchX < posX || touchX > (posX + scaledW) || touchY < posY || touchY > (posY + scaledH)) {
+            return null
+        }
+
+        val normX = ((touchX - posX) / scaledW).coerceIn(0f, 1f)
+        val normY = ((touchY - posY) / scaledH).coerceIn(0f, 1f)
+
+        return if (isRotated) {
+            val phoneX = (normY * phoneWidth).coerceIn(0f, (phoneWidth - 1).toFloat())
+            val phoneY = ((1.0f - normX) * phoneHeight).coerceIn(0f, (phoneHeight - 1).toFloat())
+            Pair(phoneX, phoneY)
+        } else {
+            val phoneX = (normX * phoneWidth).coerceIn(0f, (phoneWidth - 1).toFloat())
+            val phoneY = (normY * phoneHeight).coerceIn(0f, (phoneHeight - 1).toFloat())
+            Pair(phoneX, phoneY)
+        }
     }
 }

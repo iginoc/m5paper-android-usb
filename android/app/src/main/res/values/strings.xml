@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">M5Paper USB Companion</string>
+    <string name="accessibility_service_desc">Consente a M5Paper di simulare tocchi sullo schermo dello smartphone via USB.</string>
 </resources>

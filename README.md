@@ -40,7 +40,7 @@ Ogni comando termina con il carattere newline `\n`.
 | **M5Paper $\to$ Android** | `ACK:<CMD>` | Riscontro ricezione ed esecuzione comando (`ACK:IMG_BEGIN`, `ACK:CHUNK`, `ACK:IMG_DONE`) |
 | **M5Paper $\to$ Android** | `PONG` | Risposta al ping |
 | **M5Paper $\to$ Android** | `STATUS:bat_mv=X,bat_pct=Y,temp=Z,hum=W,uptime=U` | Telemetria completa (batteria, SHT30, uptime) |
-| **M5Paper $\to$ Android** | `TOUCH:x=X,y=Y,size=S` | Coordinate del tocco rilevato sullo schermo E-ink (esce da screenshot) |
+| **M5Paper $\to$ Android** | `TOUCH:x=X,y=Y,size=S,scr=1/0` | Coordinate del tocco: se durante lo screenshot (`scr=1`), simula il tocco sullo smartphone e aggiorna lo schermo |
 | **M5Paper $\to$ Android** | `EVENT:BTN_PUSH` | **Pressione tasto centrale (rotellina)**: richiede lo screenshot a pieno schermo |
 | **M5Paper $\to$ Android** | `EVENT:BTN_LEFT / BTN_RIGHT` | Spostamento laterale rotellina (esce da screenshot e torna a dashboard) |
 
@@ -130,5 +130,4 @@ m5paper-android-usb/
   - `[RX]` (verde): risposte, telemetria ed eventi da M5Paper
   - `[SYS]` (giallo): stato connessione e driver
 - **Telemetria Live**: Temperatura (°C), Umidità relativa (%) dal sensore **SHT30**, tensione e percentuale batteria dell'M5Paper visualizzati in tempo reale nell'interfaccia Android.
-- **Interazione Touch & Tasti**: Toccando lo schermo o cliccando la rotellina sull'M5Paper, l'evento viene inviato istantaneamente all'app Android.
-- **📸 Screenshot Mirroring a Pieno Schermo**: Premendo il tasto centrale (click della rotellina) su M5Paper, lo smartphone acquisisce automaticamente uno screenshot via `MediaProjection`, lo formatta per il display 960x540 (opzione ruotato 90° a pieno schermo o centrato) e lo invia a blocchi binari su USB seriale a 2 Mbps. M5Paper visualizza lo screenshot a pieno schermo con rendering a 16 livelli di grigio (`UPDATE_MODE_GC16`). Toccando lo schermo o muovendo la rotellina si torna istantaneamente alla dashboard!
+- **📸 Screenshot Mirroring e Controllo Touch Remoto**: Premendo il tasto centrale (click della rotellina) su M5Paper, lo smartphone acquisisce automaticamente uno screenshot via `MediaProjection`, lo formatta per il display 960x540 (ruotato a pieno schermo o centrato) e lo invia su USB seriale a 2 Mbps. M5Paper visualizza lo screenshot a pieno schermo (`UPDATE_MODE_GC16`). Toccando lo schermo dell'M5Paper durante la visualizzazione dello screenshot, le coordinate vengono rimappate ed inviate allo smartphone, che simula il tocco via `RemoteTouchAccessibilityService` e aggiorna automaticamente la schermata; spostando la rotellina lateralmente o premendo 'Home' dall'app si torna istantaneamente alla dashboard!

@@ -20,7 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.m5paperusb.ui.theme.M5PaperUsbCompanionTheme
+import android.provider.Settings
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -100,7 +102,9 @@ fun MainScreen(
     val connectionStatus by usbController.connectionStatus.collectAsState()
     val isCaptureRunning by ScreenCaptureService.isRunning.collectAsState()
     val transferState by screenshotManager.transferState.collectAsState()
+    val isRemoteTouchActive by RemoteTouchAccessibilityService.isRunningFlow.collectAsState()
 
+    var isShowingScreenshot by remember { mutableStateOf(false) }
     val logs = remember { mutableStateListOf<LogEntry>() }
     var telemetry by remember { mutableStateOf(DeviceTelemetry()) }
     var inputText by remember { mutableStateOf("") }
@@ -111,6 +115,12 @@ fun MainScreen(
     val listState = rememberLazyListState()
     val scrollState = rememberScrollState()
     val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(transferState) {
+        if (transferState is ScreenshotTransferState.Success) {
+            isShowingScreenshot = true
+        }
+    }
 
     fun addLog(direction: Direction, text: String) {
         val entry = LogEntry(timeFormatter.format(Date()), direction, text)
@@ -209,7 +219,70 @@ fun MainScreen(
                     addLog(Direction.ERROR, "Tasto premuto su M5Paper ma la cattura schermo non è abilitata sull'app!")
                     onSend("MSG:Abilita screenshot sull'app Android!")
                 }
-            } else if (line.startsWith("TOUCH:") || line.startsWith("EVENT:")) {
+            } else if (line.startsWith("TOUCH:")) {
+                telemetry = telemetry.copy(lastTouch = line)
+                try {
+                    // Expected format: TOUCH:x=480,y=270,size=1,scr=1
+                    val params = line.substring(6).split(",")
+                    var touchX = -1
+                    var touchY = -1
+                    var scrParam: Int? = null
+                    for (p in params) {
+                        val kv = p.split("=")
+                        if (kv.size == 2) {
+                            when (kv[0].trim()) {
+                                "x" -> touchX = kv[1].trim().toIntOrNull() ?: -1
+                                "y" -> touchY = kv[1].trim().toIntOrNull() ?: -1
+                                "scr" -> scrParam = kv[1].trim().toIntOrNull()
+                            }
+                        }
+                    }
+
+                    // A touch is during screenshot if explicitly marked scr=1, or if app is in screenshot mode
+                    val isScreenshotMode = (scrParam == 1) || (scrParam == null && isShowingScreenshot)
+
+                    if (touchX >= 0 && touchY >= 0) {
+                        if (isScreenshotMode) {
+                            val mapped = screenshotManager.mapM5PaperTouchToPhone(touchX, touchY)
+                            if (mapped != null) {
+                                val (phoneX, phoneY) = mapped
+                                if (RemoteTouchAccessibilityService.isRunning()) {
+                                    val ok = RemoteTouchAccessibilityService.injectTap(phoneX, phoneY) {
+                                        // Tap successfully executed on phone: refresh screenshot after short delay
+                                        if (isCaptureRunning) {
+                                            coroutineScope.launch {
+                                                delay(400)
+                                                triggerScreenshotCapture()
+                                            }
+                                        }
+                                    }
+                                    if (ok) {
+                                        addLog(Direction.INFO, "👆 Tocco inviato allo smartphone a (${phoneX.toInt()}, ${phoneY.toInt()}) [M5Paper: $touchX, $touchY]")
+                                    } else {
+                                        addLog(Direction.ERROR, "Iniezione tocco fallita a (${phoneX.toInt()}, ${phoneY.toInt()})")
+                                    }
+                                } else {
+                                    addLog(Direction.INFO, "👆 Tocco screenshot ($touchX, $touchY -> Phone ${phoneX.toInt()}, ${phoneY.toInt()}) [Attiva l'Accessibilità per cliccare]")
+                                }
+                            } else {
+                                addLog(Direction.INFO, "Tocco M5Paper ($touchX, $touchY) fuori dai bordi dello screenshot")
+                            }
+                        } else {
+                            addLog(Direction.INFO, "👆 Tocco M5Paper sulla Dashboard a ($touchX, $touchY)")
+                        }
+                    }
+                } catch (e: Exception) {
+                    addLog(Direction.ERROR, "Errore elaborazione tocco: ${e.message}")
+                }
+            } else if (line == "EVENT:BTN_LEFT" || line == "EVENT:BTN_RIGHT") {
+                isShowingScreenshot = false
+                telemetry = telemetry.copy(lastTouch = line)
+                addLog(Direction.RX, "$line -> Rotellina M5Paper spostata, ritorno alla Dashboard")
+            } else if (line == "EVENT:DASHBOARD" || line == "ACK:DASHBOARD") {
+                isShowingScreenshot = false
+                telemetry = telemetry.copy(lastTouch = line)
+                addLog(Direction.RX, "$line -> Ritorno alla Dashboard")
+            } else if (line.startsWith("EVENT:")) {
                 telemetry = telemetry.copy(lastTouch = line)
             }
         }
@@ -380,39 +453,104 @@ fun MainScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "Screenshot M5Paper",
+                                "Screenshot & Controllo Touch",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         }
 
-                        // Status Badge
-                        AssistChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    if (isCaptureRunning) "Cattura Attiva" else "Non Attiva",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            },
-                            leadingIcon = {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(if (isCaptureRunning) Color(0xFF22C55E) else Color(0xFFEF4444))
-                                )
-                            }
-                        )
+                        // Status Badges
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AssistChip(
+                                onClick = {},
+                                label = {
+                                    Text(
+                                        if (isCaptureRunning) "Cattura ON" else "Cattura OFF",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                },
+                                leadingIcon = {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(if (isCaptureRunning) Color(0xFF22C55E) else Color(0xFFEF4444))
+                                    )
+                                }
+                            )
+
+                            AssistChip(
+                                onClick = {
+                                    if (!isRemoteTouchActive) {
+                                        RemoteTouchAccessibilityService.openAccessibilitySettings(context)
+                                        Toast.makeText(context, "Attiva 'M5Paper USB Companion' in Accessibilità", Toast.LENGTH_LONG).show()
+                                    }
+                                },
+                                label = {
+                                    Text(
+                                        if (isRemoteTouchActive) "Touch ON" else "Touch OFF",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                },
+                                leadingIcon = {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(if (isRemoteTouchActive) Color(0xFF22C55E) else Color(0xFFEF4444))
+                                    )
+                                }
+                            )
+                        }
                     }
 
                     Text(
-                        text = "Premi il tasto centrale (rotellina) su M5Paper per inviare istantaneamente lo screenshot dello smartphone a pieno schermo.",
+                        text = "Premi la rotellina su M5Paper per acquisire lo schermo. Tocca il display di M5Paper durante lo screenshot per interagire con lo smartphone.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    if (!isRemoteTouchActive) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "Controllo Touch Remoto non attivo",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        "Attiva l'Accessibilità per cliccare sullo smartphone da M5Paper.",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        RemoteTouchAccessibilityService.openAccessibilitySettings(context)
+                                        Toast.makeText(context, "Attiva 'M5Paper USB Companion' in Accessibilità", Toast.LENGTH_LONG).show()
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(30.dp)
+                                ) {
+                                    Text("Attiva", fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
 
                     // Action buttons
                     Row(
@@ -428,7 +566,7 @@ fun MainScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                             ) {
-                                Icon(Icons.Default.ScreenShare, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.AutoMirrored.Filled.ScreenShare, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Abilita Cattura Schermo")
                             }
@@ -444,10 +582,13 @@ fun MainScreen(
                             }
 
                             OutlinedButton(
-                                onClick = { ScreenCaptureService.stopService(context) },
+                                onClick = {
+                                    ScreenCaptureService.stopService(context)
+                                    isShowingScreenshot = false
+                                },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Icon(Icons.Default.StopScreenShare, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.AutoMirrored.Filled.StopScreenShare, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Disabilita")
                             }
@@ -570,7 +711,10 @@ fun MainScreen(
                 FilledTonalButton(
                     onClick = {
                         val cmd = "REFRESH"
-                        if (onSend(cmd)) addLog(Direction.TX, cmd)
+                        if (onSend(cmd)) {
+                            addLog(Direction.TX, cmd)
+                            isShowingScreenshot = false
+                        }
                     },
                     modifier = Modifier.weight(1f)
                 ) {
@@ -579,7 +723,10 @@ fun MainScreen(
                 FilledTonalButton(
                     onClick = {
                         val cmd = "DASHBOARD"
-                        if (onSend(cmd)) addLog(Direction.TX, cmd)
+                        if (onSend(cmd)) {
+                            addLog(Direction.TX, cmd)
+                            isShowingScreenshot = false
+                        }
                     },
                     modifier = Modifier.weight(1f)
                 ) {
@@ -619,6 +766,7 @@ fun MainScreen(
                                     val cmd = "MSG:$inputText"
                                     if (onSend(cmd)) {
                                         addLog(Direction.TX, cmd)
+                                        isShowingScreenshot = false
                                         inputText = ""
                                     }
                                 }
@@ -639,15 +787,24 @@ fun MainScreen(
                     ) {
                         PresetChip("Meeting 15:00") {
                             val cmd = "MSG:Meeting at 15:00 in Room B"
-                            if (onSend(cmd)) addLog(Direction.TX, cmd)
+                            if (onSend(cmd)) {
+                                addLog(Direction.TX, cmd)
+                                isShowingScreenshot = false
+                            }
                         }
                         PresetChip("Do Not Disturb") {
                             val cmd = "MSG:Do Not Disturb - In Deep Work"
-                            if (onSend(cmd)) addLog(Direction.TX, cmd)
+                            if (onSend(cmd)) {
+                                addLog(Direction.TX, cmd)
+                                isShowingScreenshot = false
+                            }
                         }
                         PresetChip("Coffee ☕") {
                             val cmd = "MSG:Coffee Break time! ☕"
-                            if (onSend(cmd)) addLog(Direction.TX, cmd)
+                            if (onSend(cmd)) {
+                                addLog(Direction.TX, cmd)
+                                isShowingScreenshot = false
+                            }
                         }
                     }
                 }
