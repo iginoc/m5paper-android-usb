@@ -42,8 +42,8 @@ Ogni comando termina con il carattere newline `\n`.
 | **M5Paper $\to$ Android** | `STATUS:bat_mv=X,bat_pct=Y,temp=Z,hum=W,uptime=U` | Telemetria completa (batteria, SHT30, uptime) |
 | **M5Paper $\to$ Android** | `TOUCH:x=X,y=Y,size=S,scr=1/0` | Coordinate del tocco: se durante lo screenshot (`scr=1`), simula il tocco sullo smartphone e aggiorna lo schermo |
 | **M5Paper $\to$ Android** | `EVENT:BTN_PUSH` | **Click rotellina**: richiede lo screenshot; **pressione prolungata (>1s)**: torna alla dashboard (`EVENT:DASHBOARD`) |
-| **M5Paper $\to$ Android** | `EVENT:BTN_UP` | **Rotellina Su**: esegue il tasto Su dello smartphone (Volume Su / Scorri Su / D-Pad Su) |
-| **M5Paper $\to$ Android** | `EVENT:BTN_DOWN` | **Rotellina Giù**: esegue il tasto Giù dello smartphone (Volume Giù / Scorri Giù / D-Pad Giù) |
+| **M5Paper $\to$ Android** | `EVENT:BTN_UP` | **Rotellina Su**: scorre la pagina verso l'alto (Scorri Pagina / Volume / D-Pad) |
+| **M5Paper $\to$ Android** | `EVENT:BTN_DOWN` | **Rotellina Giù**: scorre la pagina verso il basso (Scorri Pagina / Volume / D-Pad) |
 | **M5Paper $\to$ Android** | `EVENT:DASHBOARD` | Notifica il ritorno alla dashboard dell'M5Paper |
 
 ---
@@ -132,4 +132,4 @@ m5paper-android-usb/
   - `[RX]` (verde): risposte, telemetria ed eventi da M5Paper
   - `[SYS]` (giallo): stato connessione e driver
 - **📸 Screenshot Mirroring e Controllo Touch Remoto**: Premendo il tasto centrale (click rapido rotellina) su M5Paper, lo smartphone acquisisce automaticamente uno screenshot via `MediaProjection`, lo formatta per il display 960x540 (ruotato a pieno schermo o centrato) e lo invia su USB seriale a 2 Mbps. M5Paper visualizza lo screenshot a pieno schermo (`UPDATE_MODE_GC16`). Toccando lo schermo dell'M5Paper durante la visualizzazione dello screenshot, le coordinate vengono rimappate ed inviate allo smartphone, che simula il tocco via `RemoteTouchAccessibilityService` e aggiorna automaticamente la schermata. Tenendo premuta la rotellina per 1 secondo o premendo 'Home' dall'app si torna alla dashboard!
-- **🎛️ Tasti Fisici Su e Giù**: Muovendo la rotellina dell'M5Paper verso l'alto (`EVENT:BTN_UP`) o verso il basso (`EVENT:BTN_DOWN`), vengono azionati i corrispondenti comandi dello smartphone: **Volume Su/Giù** (default, ideale per regolare il volume o girare pagina negli e-reader), oppure **Scorrimento Schermo (Scroll)** o **Frecce Direzionali (D-Pad)**, configurabili tramite selettore nell'app.
+- **🎛️ Tasti Fisici Su e Giù**: Muovendo la rotellina dell'M5Paper verso l'alto (`EVENT:BTN_UP`) o verso il basso (`EVENT:BTN_DOWN`), viene azionato lo **Scorrimento Pagina (Scroll)** dello smartphone (default, ideale per scorrere pagine web, documenti ed e-book), oppure **Volume Su/Giù** o **Frecce Direzionali (D-Pad)**, configurabili tramite selettore nell'app.

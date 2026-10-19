@@ -52,8 +52,8 @@ enum class Direction {
 }
 
 enum class UpDownKeyAction(val label: String) {
+    SCROLL("Scorri Pagina"),
     VOLUME("Volume Su/Giù"),
-    SCROLL("Scorri Schermo"),
     DPAD("Frecce D-Pad")
 }
 
@@ -116,7 +116,7 @@ fun MainScreen(
     var inputText by remember { mutableStateOf("") }
     var selectedBaudRate by remember { mutableStateOf(UsbSerialController.DEFAULT_BAUD_RATE) }
     var selectedFitMode by remember { mutableStateOf(screenshotManager.fitMode) }
-    var selectedKeyAction by remember { mutableStateOf(UpDownKeyAction.VOLUME) }
+    var selectedKeyAction by remember { mutableStateOf(UpDownKeyAction.SCROLL) }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
     val listState = rememberLazyListState()
@@ -180,29 +180,11 @@ fun MainScreen(
     // Handle Up/Down physical key from M5Paper
     fun handleUpDownKey(isUp: Boolean) {
         when (selectedKeyAction) {
-            UpDownKeyAction.VOLUME -> {
-                val ok = if (isUp) {
-                    RemoteTouchAccessibilityService.performVolumeUp(context)
-                } else {
-                    RemoteTouchAccessibilityService.performVolumeDown(context)
-                }
-                if (ok) {
-                    addLog(Direction.INFO, if (isUp) "🔊 Smartphone: Volume Su (+)" else "🔉 Smartphone: Volume Giù (-)")
-                    if (isCaptureRunning && isShowingScreenshot) {
-                        coroutineScope.launch {
-                            delay(400)
-                            triggerScreenshotCapture()
-                        }
-                    }
-                } else {
-                    addLog(Direction.ERROR, "Errore regolazione volume sullo smartphone")
-                }
-            }
             UpDownKeyAction.SCROLL -> {
                 if (RemoteTouchAccessibilityService.isRunning()) {
                     val ok = if (isUp) {
                         RemoteTouchAccessibilityService.performScrollUp {
-                            if (isCaptureRunning && isShowingScreenshot) {
+                            if (isCaptureRunning) {
                                 coroutineScope.launch {
                                     delay(400)
                                     triggerScreenshotCapture()
@@ -211,7 +193,7 @@ fun MainScreen(
                         }
                     } else {
                         RemoteTouchAccessibilityService.performScrollDown {
-                            if (isCaptureRunning && isShowingScreenshot) {
+                            if (isCaptureRunning) {
                                 coroutineScope.launch {
                                     delay(400)
                                     triggerScreenshotCapture()
@@ -226,6 +208,25 @@ fun MainScreen(
                     }
                 } else {
                     addLog(Direction.ERROR, "Attiva il servizio Accessibilità per consentire lo scorrimento dello schermo")
+                    Toast.makeText(context, "Attiva l'Accessibilità per consentire lo scorrimento", Toast.LENGTH_SHORT).show()
+                }
+            }
+            UpDownKeyAction.VOLUME -> {
+                val ok = if (isUp) {
+                    RemoteTouchAccessibilityService.performVolumeUp(context)
+                } else {
+                    RemoteTouchAccessibilityService.performVolumeDown(context)
+                }
+                if (ok) {
+                    addLog(Direction.INFO, if (isUp) "🔊 Smartphone: Volume Su (+)" else "🔉 Smartphone: Volume Giù (-)")
+                    if (isCaptureRunning) {
+                        coroutineScope.launch {
+                            delay(400)
+                            triggerScreenshotCapture()
+                        }
+                    }
+                } else {
+                    addLog(Direction.ERROR, "Errore regolazione volume sullo smartphone")
                 }
             }
             UpDownKeyAction.DPAD -> {
@@ -237,7 +238,7 @@ fun MainScreen(
                     }
                     if (ok) {
                         addLog(Direction.INFO, if (isUp) "⬆️ Smartphone: Freccia Su (D-Pad)" else "⬇️ Smartphone: Freccia Giù (D-Pad)")
-                        if (isCaptureRunning && isShowingScreenshot) {
+                        if (isCaptureRunning) {
                             coroutineScope.launch {
                                 delay(350)
                                 triggerScreenshotCapture()
@@ -247,7 +248,7 @@ fun MainScreen(
                         // Fallback to scroll if D-Pad not supported on current Android version
                         if (isUp) {
                             RemoteTouchAccessibilityService.performScrollUp {
-                                if (isCaptureRunning && isShowingScreenshot) {
+                                if (isCaptureRunning) {
                                     coroutineScope.launch {
                                         delay(400)
                                         triggerScreenshotCapture()
@@ -256,7 +257,7 @@ fun MainScreen(
                             }
                         } else {
                             RemoteTouchAccessibilityService.performScrollDown {
-                                if (isCaptureRunning && isShowingScreenshot) {
+                                if (isCaptureRunning) {
                                     coroutineScope.launch {
                                         delay(400)
                                         triggerScreenshotCapture()
@@ -268,6 +269,7 @@ fun MainScreen(
                     }
                 } else {
                     addLog(Direction.ERROR, "Attiva il servizio Accessibilità per i tasti direzionali")
+                    Toast.makeText(context, "Attiva l'Accessibilità per i tasti direzionali", Toast.LENGTH_SHORT).show()
                 }
             }
         }
