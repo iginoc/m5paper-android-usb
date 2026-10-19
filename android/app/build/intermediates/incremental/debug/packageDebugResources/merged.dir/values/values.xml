@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">M5Paper USB Companion</string>
+    <style name="Theme.M5PaperUsbCompanion" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#1A1C1E</item>
+        <item name="android:navigationBarColor">#1A1C1E</item>
+    </style>
+</resources>

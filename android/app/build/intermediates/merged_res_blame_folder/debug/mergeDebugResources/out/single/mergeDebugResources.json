@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.example.m5paperusb.app-debug-4:/xml_usb_device_filter.xml.flat",
+        "source": "com.example.m5paperusb.app-main-6:/xml/usb_device_filter.xml"
+    }
+]
