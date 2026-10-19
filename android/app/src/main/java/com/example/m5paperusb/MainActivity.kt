@@ -51,6 +51,12 @@ enum class Direction {
     TX, RX, INFO, ERROR
 }
 
+enum class UpDownKeyAction(val label: String) {
+    VOLUME("Volume Su/Giù"),
+    SCROLL("Scorri Schermo"),
+    DPAD("Frecce D-Pad")
+}
+
 data class DeviceTelemetry(
     val batteryMv: Int = 0,
     val batteryPct: Int = 0,
@@ -110,6 +116,7 @@ fun MainScreen(
     var inputText by remember { mutableStateOf("") }
     var selectedBaudRate by remember { mutableStateOf(UsbSerialController.DEFAULT_BAUD_RATE) }
     var selectedFitMode by remember { mutableStateOf(screenshotManager.fitMode) }
+    var selectedKeyAction by remember { mutableStateOf(UpDownKeyAction.VOLUME) }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
     val listState = rememberLazyListState()
@@ -166,6 +173,102 @@ fun MainScreen(
             } else {
                 val errMsg = (screenshotManager.transferState.value as? ScreenshotTransferState.Error)?.message ?: "Errore sconosciuto"
                 addLog(Direction.ERROR, "Invio screenshot fallito: $errMsg")
+            }
+        }
+    }
+
+    // Handle Up/Down physical key from M5Paper
+    fun handleUpDownKey(isUp: Boolean) {
+        when (selectedKeyAction) {
+            UpDownKeyAction.VOLUME -> {
+                val ok = if (isUp) {
+                    RemoteTouchAccessibilityService.performVolumeUp(context)
+                } else {
+                    RemoteTouchAccessibilityService.performVolumeDown(context)
+                }
+                if (ok) {
+                    addLog(Direction.INFO, if (isUp) "🔊 Smartphone: Volume Su (+)" else "🔉 Smartphone: Volume Giù (-)")
+                    if (isCaptureRunning && isShowingScreenshot) {
+                        coroutineScope.launch {
+                            delay(400)
+                            triggerScreenshotCapture()
+                        }
+                    }
+                } else {
+                    addLog(Direction.ERROR, "Errore regolazione volume sullo smartphone")
+                }
+            }
+            UpDownKeyAction.SCROLL -> {
+                if (RemoteTouchAccessibilityService.isRunning()) {
+                    val ok = if (isUp) {
+                        RemoteTouchAccessibilityService.performScrollUp {
+                            if (isCaptureRunning && isShowingScreenshot) {
+                                coroutineScope.launch {
+                                    delay(400)
+                                    triggerScreenshotCapture()
+                                }
+                            }
+                        }
+                    } else {
+                        RemoteTouchAccessibilityService.performScrollDown {
+                            if (isCaptureRunning && isShowingScreenshot) {
+                                coroutineScope.launch {
+                                    delay(400)
+                                    triggerScreenshotCapture()
+                                }
+                            }
+                        }
+                    }
+                    if (ok) {
+                        addLog(Direction.INFO, if (isUp) "📜 Smartphone: Scorri Su (▲)" else "📜 Smartphone: Scorri Giù (▼)")
+                    } else {
+                        addLog(Direction.ERROR, "Errore esecuzione scorrimento")
+                    }
+                } else {
+                    addLog(Direction.ERROR, "Attiva il servizio Accessibilità per consentire lo scorrimento dello schermo")
+                }
+            }
+            UpDownKeyAction.DPAD -> {
+                if (RemoteTouchAccessibilityService.isRunning()) {
+                    val ok = if (isUp) {
+                        RemoteTouchAccessibilityService.performDpadUp()
+                    } else {
+                        RemoteTouchAccessibilityService.performDpadDown()
+                    }
+                    if (ok) {
+                        addLog(Direction.INFO, if (isUp) "⬆️ Smartphone: Freccia Su (D-Pad)" else "⬇️ Smartphone: Freccia Giù (D-Pad)")
+                        if (isCaptureRunning && isShowingScreenshot) {
+                            coroutineScope.launch {
+                                delay(350)
+                                triggerScreenshotCapture()
+                            }
+                        }
+                    } else {
+                        // Fallback to scroll if D-Pad not supported on current Android version
+                        if (isUp) {
+                            RemoteTouchAccessibilityService.performScrollUp {
+                                if (isCaptureRunning && isShowingScreenshot) {
+                                    coroutineScope.launch {
+                                        delay(400)
+                                        triggerScreenshotCapture()
+                                    }
+                                }
+                            }
+                        } else {
+                            RemoteTouchAccessibilityService.performScrollDown {
+                                if (isCaptureRunning && isShowingScreenshot) {
+                                    coroutineScope.launch {
+                                        delay(400)
+                                        triggerScreenshotCapture()
+                                    }
+                                }
+                            }
+                        }
+                        addLog(Direction.INFO, if (isUp) "⬆️ Smartphone: Scorrimento Su (fallback)" else "⬇️ Smartphone: Scorrimento Giù (fallback)")
+                    }
+                } else {
+                    addLog(Direction.ERROR, "Attiva il servizio Accessibilità per i tasti direzionali")
+                }
             }
         }
     }
@@ -274,10 +377,14 @@ fun MainScreen(
                 } catch (e: Exception) {
                     addLog(Direction.ERROR, "Errore elaborazione tocco: ${e.message}")
                 }
-            } else if (line == "EVENT:BTN_LEFT" || line == "EVENT:BTN_RIGHT") {
-                isShowingScreenshot = false
-                telemetry = telemetry.copy(lastTouch = line)
-                addLog(Direction.RX, "$line -> Rotellina M5Paper spostata, ritorno alla Dashboard")
+            } else if (line == "EVENT:BTN_UP" || line == "EVENT:BTN_LEFT") {
+                telemetry = telemetry.copy(lastTouch = "Wheel UP (Tasto Su)")
+                addLog(Direction.RX, "$line -> Tasto Su premuto su M5Paper")
+                handleUpDownKey(isUp = true)
+            } else if (line == "EVENT:BTN_DOWN" || line == "EVENT:BTN_RIGHT") {
+                telemetry = telemetry.copy(lastTouch = "Wheel DOWN (Tasto Giù)")
+                addLog(Direction.RX, "$line -> Tasto Giù premuto su M5Paper")
+                handleUpDownKey(isUp = false)
             } else if (line == "EVENT:DASHBOARD" || line == "ACK:DASHBOARD") {
                 isShowingScreenshot = false
                 telemetry = telemetry.copy(lastTouch = line)
@@ -617,6 +724,21 @@ fun MainScreen(
                             },
                             label = { Text("Adatta Orizzontale", fontSize = 11.sp) }
                         )
+                    }
+
+                    // Tasti Su/Giù action mode selector
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text("Tasti Su/Giù:", fontSize = 11.sp, color = Color.Gray)
+                        UpDownKeyAction.values().forEach { action ->
+                            FilterChip(
+                                selected = selectedKeyAction == action,
+                                onClick = { selectedKeyAction = action },
+                                label = { Text(action.label, fontSize = 11.sp) }
+                            )
+                        }
                     }
 
                     // Transfer State Indicator

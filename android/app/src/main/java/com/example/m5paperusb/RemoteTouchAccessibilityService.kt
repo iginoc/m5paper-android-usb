@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
 import android.graphics.Path
+import android.media.AudioManager
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
@@ -107,6 +108,72 @@ class RemoteTouchAccessibilityService : AccessibilityService() {
                 )
             }
             return false
+        }
+
+        fun performVolumeUp(context: Context): Boolean {
+            return try {
+                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                audioManager.adjustSuggestedStreamVolume(
+                    AudioManager.ADJUST_RAISE,
+                    AudioManager.USE_DEFAULT_STREAM_TYPE,
+                    AudioManager.FLAG_SHOW_UI
+                )
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Errore Volume Su: ${e.message}")
+                false
+            }
+        }
+
+        fun performVolumeDown(context: Context): Boolean {
+            return try {
+                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                audioManager.adjustSuggestedStreamVolume(
+                    AudioManager.ADJUST_LOWER,
+                    AudioManager.USE_DEFAULT_STREAM_TYPE,
+                    AudioManager.FLAG_SHOW_UI
+                )
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Errore Volume Giù: ${e.message}")
+                false
+            }
+        }
+
+        fun performScrollUp(onComplete: (() -> Unit)? = null): Boolean {
+            val width = ScreenCaptureService.screenWidth.toFloat()
+            val height = ScreenCaptureService.screenHeight.toFloat()
+            val midX = width * 0.5f
+            val startY = height * 0.35f
+            val endY = height * 0.75f
+            return injectSwipe(midX, startY, midX, endY, 250, onComplete)
+        }
+
+        fun performScrollDown(onComplete: (() -> Unit)? = null): Boolean {
+            val width = ScreenCaptureService.screenWidth.toFloat()
+            val height = ScreenCaptureService.screenHeight.toFloat()
+            val midX = width * 0.5f
+            val startY = height * 0.75f
+            val endY = height * 0.35f
+            return injectSwipe(midX, startY, midX, endY, 250, onComplete)
+        }
+
+        fun performDpadUp(): Boolean {
+            val service = instance ?: return false
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                service.performGlobalAction(GLOBAL_ACTION_DPAD_UP)
+            } else {
+                false
+            }
+        }
+
+        fun performDpadDown(): Boolean {
+            val service = instance ?: return false
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                service.performGlobalAction(GLOBAL_ACTION_DPAD_DOWN)
+            } else {
+                false
+            }
         }
     }
 

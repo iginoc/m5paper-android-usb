@@ -393,30 +393,38 @@ void loop() {
     }
 
     // 3. Check Physical Buttons (Wheel Switch)
-    if (M5.BtnP.wasPressed()) {
-        Serial.println("EVENT:BTN_PUSH");
-        lastTouchInfo = "Wheel Click";
-        // Button press requests a fresh screenshot from Android
+    static bool longPressHandled = false;
+    if (M5.BtnP.isPressed()) {
+        if (!longPressHandled && M5.BtnP.pressedFor(1000)) {
+            longPressHandled = true;
+            if (isShowingScreenshot) {
+                isShowingScreenshot = false;
+                renderUI(true);
+                Serial.println("EVENT:DASHBOARD");
+            }
+        }
+    } else {
+        if (M5.BtnP.wasReleased()) {
+            if (!longPressHandled) {
+                Serial.println("EVENT:BTN_PUSH");
+                lastTouchInfo = "Wheel Click";
+                // Short click requests a fresh screenshot from Android
+            }
+        }
+        longPressHandled = false;
     }
+
     if (M5.BtnL.wasPressed()) {
-        Serial.println("EVENT:BTN_LEFT");
-        lastTouchInfo = "Wheel Left";
-        if (isShowingScreenshot) {
-            isShowingScreenshot = false;
-            renderUI(true);
-            Serial.println("EVENT:DASHBOARD");
-        } else {
+        Serial.println("EVENT:BTN_UP");
+        lastTouchInfo = "Key UP";
+        if (!isShowingScreenshot) {
             renderUI(false);
         }
     }
     if (M5.BtnR.wasPressed()) {
-        Serial.println("EVENT:BTN_RIGHT");
-        lastTouchInfo = "Wheel Right";
-        if (isShowingScreenshot) {
-            isShowingScreenshot = false;
-            renderUI(true);
-            Serial.println("EVENT:DASHBOARD");
-        } else {
+        Serial.println("EVENT:BTN_DOWN");
+        lastTouchInfo = "Key DOWN";
+        if (!isShowingScreenshot) {
             renderUI(false);
         }
     }
