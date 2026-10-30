@@ -115,7 +115,6 @@ fun MainScreen(
     var telemetry by remember { mutableStateOf(DeviceTelemetry()) }
     var inputText by remember { mutableStateOf("") }
     var selectedBaudRate by remember { mutableStateOf(UsbSerialController.DEFAULT_BAUD_RATE) }
-    var selectedFitMode by remember { mutableStateOf(screenshotManager.fitMode) }
     var selectedKeyAction by remember { mutableStateOf(UpDownKeyAction.SCROLL) }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
@@ -348,29 +347,84 @@ fun MainScreen(
 
                     if (touchX >= 0 && touchY >= 0) {
                         if (isScreenshotMode) {
-                            val mapped = screenshotManager.mapM5PaperTouchToPhone(touchX, touchY)
-                            if (mapped != null) {
-                                val (phoneX, phoneY) = mapped
+                            if (screenshotManager.isHomeButtonTouch(touchX, touchY)) {
+                                addLog(Direction.INFO, "🏠 Tasto Home premuto su M5Paper -> Invio comando Home allo smartphone")
                                 if (RemoteTouchAccessibilityService.isRunning()) {
-                                    val ok = RemoteTouchAccessibilityService.injectTap(phoneX, phoneY) {
-                                        // Tap successfully executed on phone: refresh screenshot after short delay
+                                    val ok = RemoteTouchAccessibilityService.performHome {
                                         if (isCaptureRunning) {
                                             coroutineScope.launch {
-                                                delay(400)
+                                                delay(450)
                                                 triggerScreenshotCapture()
                                             }
                                         }
                                     }
                                     if (ok) {
-                                        addLog(Direction.INFO, "👆 Tocco inviato allo smartphone a (${phoneX.toInt()}, ${phoneY.toInt()}) [M5Paper: $touchX, $touchY]")
+                                        Toast.makeText(context, "Comando Home inviato", Toast.LENGTH_SHORT).show()
                                     } else {
-                                        addLog(Direction.ERROR, "Iniezione tocco fallita a (${phoneX.toInt()}, ${phoneY.toInt()})")
+                                        addLog(Direction.ERROR, "Errore esecuzione comando Home")
                                     }
                                 } else {
-                                    addLog(Direction.INFO, "👆 Tocco screenshot ($touchX, $touchY -> Phone ${phoneX.toInt()}, ${phoneY.toInt()}) [Attiva l'Accessibilità per cliccare]")
+                                    addLog(Direction.ERROR, "Attiva il servizio Accessibilità per usare il tasto Home")
+                                    Toast.makeText(context, "Attiva l'Accessibilità per il tasto Home", Toast.LENGTH_SHORT).show()
+                                }
+                            } else if (screenshotManager.isRefreshButtonTouch(touchX, touchY)) {
+                                addLog(Direction.INFO, "🔄 Tasto Refresh premuto su M5Paper -> Aggiornamento screenshot dello smartphone")
+                                if (isCaptureRunning) {
+                                    coroutineScope.launch {
+                                        triggerScreenshotCapture()
+                                    }
+                                    Toast.makeText(context, "Ricarica screenshot in corso...", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    addLog(Direction.ERROR, "Tasto Refresh premuto su M5Paper ma la cattura schermo non è abilitata sull'app!")
+                                    onSend("MSG:Abilita screenshot sull'app Android!")
+                                    Toast.makeText(context, "Abilita la cattura schermo per ricaricare", Toast.LENGTH_SHORT).show()
+                                }
+                            } else if (screenshotManager.isKeyboardButtonTouch(touchX, touchY)) {
+                                screenshotManager.isKeyboardVisible = !screenshotManager.isKeyboardVisible
+                                val statusStr = if (screenshotManager.isKeyboardVisible) "attivata" else "disattivata"
+                                addLog(Direction.INFO, "⌨️ Tasto Tastiera premuto su M5Paper -> Tastiera $statusStr")
+                                Toast.makeText(context, "Tastiera $statusStr", Toast.LENGTH_SHORT).show()
+                                if (isCaptureRunning) {
+                                    coroutineScope.launch {
+                                        triggerScreenshotCapture()
+                                    }
+                                }
+                            } else if (screenshotManager.isKeyboardVisible && screenshotManager.isKeyboardTouch(touchX, touchY)) {
+                                screenshotManager.handleKeyboardTouch(touchX, touchY, context) {
+                                    // Chiamato SOLO alla pressione del tasto INVIA (nessun aggiornamento durante la digitazione dei tasti)
+                                    addLog(Direction.INFO, "↵ Invio testo -> Aggiornamento screenshot dello smartphone")
+                                    if (isCaptureRunning) {
+                                        coroutineScope.launch {
+                                            delay(350)
+                                            triggerScreenshotCapture()
+                                        }
+                                    }
                                 }
                             } else {
-                                addLog(Direction.INFO, "Tocco M5Paper ($touchX, $touchY) fuori dai bordi dello screenshot")
+                                val mapped = screenshotManager.mapM5PaperTouchToPhone(touchX, touchY)
+                                if (mapped != null) {
+                                    val (phoneX, phoneY) = mapped
+                                    if (RemoteTouchAccessibilityService.isRunning()) {
+                                        val ok = RemoteTouchAccessibilityService.injectTap(phoneX, phoneY) {
+                                            // Tap successfully executed on phone: refresh screenshot after short delay
+                                            if (isCaptureRunning) {
+                                                coroutineScope.launch {
+                                                    delay(400)
+                                                    triggerScreenshotCapture()
+                                                }
+                                            }
+                                        }
+                                        if (ok) {
+                                            addLog(Direction.INFO, "👆 Tocco inviato allo smartphone a (${phoneX.toInt()}, ${phoneY.toInt()}) [M5Paper: $touchX, $touchY]")
+                                        } else {
+                                            addLog(Direction.ERROR, "Iniezione tocco fallita a (${phoneX.toInt()}, ${phoneY.toInt()})")
+                                        }
+                                    } else {
+                                        addLog(Direction.INFO, "👆 Tocco screenshot ($touchX, $touchY -> Phone ${phoneX.toInt()}, ${phoneY.toInt()}) [Attiva l'Accessibilità per cliccare]")
+                                    }
+                                } else {
+                                    addLog(Direction.INFO, "Tocco M5Paper ($touchX, $touchY) fuori dai bordi dello screenshot")
+                                }
                             }
                         } else {
                             addLog(Direction.INFO, "👆 Tocco M5Paper sulla Dashboard a ($touchX, $touchY)")
@@ -378,6 +432,42 @@ fun MainScreen(
                     }
                 } catch (e: Exception) {
                     addLog(Direction.ERROR, "Errore elaborazione tocco: ${e.message}")
+                }
+            } else if (line == "EVENT:HOME" || line == "CMD:HOME") {
+                telemetry = telemetry.copy(lastTouch = "Home Button")
+                addLog(Direction.RX, "$line -> Tasto Home ricevuto da M5Paper")
+                if (RemoteTouchAccessibilityService.isRunning()) {
+                    RemoteTouchAccessibilityService.performHome {
+                        if (isCaptureRunning) {
+                            coroutineScope.launch {
+                                delay(450)
+                                triggerScreenshotCapture()
+                            }
+                        }
+                    }
+                } else {
+                    addLog(Direction.ERROR, "Attiva l'Accessibilità per usare il tasto Home")
+                    Toast.makeText(context, "Attiva l'Accessibilità per il tasto Home", Toast.LENGTH_SHORT).show()
+                }
+            } else if (line == "EVENT:REFRESH" || line == "CMD:REFRESH") {
+                telemetry = telemetry.copy(lastTouch = "Refresh Button")
+                addLog(Direction.RX, "$line -> Richiesta Refresh ricevuta da M5Paper")
+                if (isCaptureRunning) {
+                    coroutineScope.launch {
+                        triggerScreenshotCapture()
+                    }
+                } else {
+                    addLog(Direction.ERROR, "Cattura schermo non abilitata")
+                }
+            } else if (line == "EVENT:KEYBOARD" || line == "CMD:KEYBOARD") {
+                screenshotManager.isKeyboardVisible = !screenshotManager.isKeyboardVisible
+                telemetry = telemetry.copy(lastTouch = "Keyboard Button")
+                val statusStr = if (screenshotManager.isKeyboardVisible) "attivata" else "disattivata"
+                addLog(Direction.RX, "$line -> Tastiera $statusStr")
+                if (isCaptureRunning) {
+                    coroutineScope.launch {
+                        triggerScreenshotCapture()
+                    }
                 }
             } else if (line == "EVENT:BTN_UP" || line == "EVENT:BTN_LEFT") {
                 telemetry = telemetry.copy(lastTouch = "Wheel UP (Tasto Su)")
@@ -704,23 +794,6 @@ fun MainScreen(
                         }
                     }
 
-                    // Format mode selector
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text("Formato:", fontSize = 11.sp, color = Color.Gray)
-                        ScreenshotFitMode.values().forEach { mode ->
-                            FilterChip(
-                                selected = selectedFitMode == mode,
-                                onClick = {
-                                    selectedFitMode = mode
-                                    screenshotManager.fitMode = mode
-                                },
-                                label = { Text(mode.label, fontSize = 11.sp) }
-                            )
-                        }
-                    }
 
                     // Tasti Su/Giù action mode selector
                     Row(

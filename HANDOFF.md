@@ -14,22 +14,37 @@ Durante questa modifica, la sessione precedente ha subito il blocco per limite d
 ## 🛠️ File Modificati
 
 1. **`android/app/src/main/java/com/example/m5paperusb/RemoteTouchAccessibilityService.kt`**
-   - Risolto un bug critico in `performScrollUp` e `performScrollDown`: prima utilizzavano direttamente `ScreenCaptureService.screenWidth/screenHeight`, che risultavano `0` se il servizio di cattura schermo non era ancora stato avviato o prima del primo screenshot.
-   - Aggiunto fallback a `resources.displayMetrics` e controllo di sicurezza sull'istanza del servizio (`instance ?: return false`).
-   - Implementata iniezione di swipe gestuale verticale centrale (da `35%` a `75%` per scroll verso l'alto, da `75%` a `35%` per scroll verso il basso, durata 250ms) via `dispatchGesture`.
+   - Risolto fallback per le metriche display in caso di screenshot non ancora inizializzato.
+   - Implementata simulazione di swipe gestuale per scorrimento pagina.
+   - Aggiunta funzione `performHome(onComplete)` per l'invio nativo di `GLOBAL_ACTION_HOME` via AccessibilityService.
+   - Aggiunte funzioni per l'input di testo remoto: `sendText()`, `appendText()`, `deleteLastChar()`, `performEnter()` con sincronizzazione su campo editabile e clipboard di sistema.
 
-2. **`android/app/src/main/java/com/example/m5paperusb/MainActivity.kt`**
-   - Modificato l'enum `UpDownKeyAction`: `SCROLL ("Scorri Pagina")` è ora la prima opzione e l'azione predefinita all'avvio (`selectedKeyAction = UpDownKeyAction.SCROLL`).
-   - Riorganizzata la funzione `handleUpDownKey(isUp: Boolean)` con `UpDownKeyAction.SCROLL` gestito in via prioritaria.
-   - Semplificata la condizione di refresh dello screenshot dopo lo scorrimento: ora controlla `if (isCaptureRunning)` invece di richiedere strettamente `isShowingScreenshot`, garantendo che lo schermo venga sempre aggiornato sull'M5Paper dopo uno scroll se la cattura è attiva.
-   - Aggiunto feedback immediato via `Toast` nel caso l'utente prema i tasti su/giù con il servizio di Accessibilità disattivato.
+2. **`android/app/src/main/java/com/example/m5paperusb/ScreenshotManager.kt`**
+   - Rimosso `ScreenshotFitMode`: screenshot sempre ruotato di 90° e allineato a destra.
+   - Creata barra laterale dei pulsanti funzione a sinistra dello screenshot (riservando almeno `MIN_SIDEBAR_WIDTH = 90px`).
+   - Disegnato il pulsante **Home** con sfondo a contrasto, bordo scuro e icona vettoriale a casetta orientata correttamente nella vista utente.
+   - Aggiunto il pulsante **Refresh** (icona vettoriale freccia circolare di ricarica) posizionato subito sotto il pulsante Home.
+   - Aggiunto il terzo pulsante **Tastiera** (icona vettoriale tastiera con stato attivo/inattivo ad alto contrasto) posizionato sotto Refresh.
+   - Implementata la **tastiera virtuale su schermo** nella parte bassa (`KEYBOARD_HEIGHT_X = 220px`):
+     - Lo screenshot dello smartphone **non si restringe** mai all'apertura della tastiera: mantiene le sue proporzioni e la sua scala intera, con la tastiera disegnata come overlay nella porzione inferiore.
+     - Layout completo a 5 righe sempre visibile: riga cifre (1-0), righe QWERTY (Q-P, A-L, Z-M), tasto Shift (⇧), Backspace (⌫), virgola (,), punto (.), spazio e tasto Invia (↵).
+     - Durante la digitazione dei singoli tasti **lo schermo non si aggiorna** (zero refresh/flicker E-ink); il refresh viene attivato unicamente alla pressione del tasto **INVIA ↵**.
+   - Implementati `getHomeButtonBounds()`, `getRefreshButtonBounds()`, `getKeyboardButtonBounds()`, `isHomeButtonTouch()`, `isRefreshButtonTouch()`, `isKeyboardButtonTouch()`, `isKeyboardTouch()` e `handleKeyboardTouch()`.
+   - Aggiornato `mapM5PaperTouchToPhone` per preservare la mappatura 1:1 dello screenshot ed escludere i tocchi nella zona della tastiera.
 
-3. **`README.md`**
-   - Aggiornata la tabella del protocollo seriale per `EVENT:BTN_UP` e `EVENT:BTN_DOWN` indicando lo scorrimento pagina come azione predefinita.
-   - Aggiornata la sezione delle funzionalità descrivendo lo scorrimento pagina predefinito per la lettura di documenti/web/e-book.
+3. **`android/app/src/main/java/com/example/m5paperusb/MainActivity.kt`**
+   - Rimosso selettore pulsanti formato.
+   - Aggiunta intercettazione tocco Home (`isHomeButtonTouch` e `EVENT:HOME`), esecuzione di `performHome()` e refresh ritardato dello screenshot (450ms) per catturare la schermata Home di Android.
+   - Aggiunta intercettazione tocco Refresh (`isRefreshButtonTouch` ed `EVENT:REFRESH`), che richiama `triggerScreenshotCapture()` (identico al click del pulsante centrale/rotellina dell'M5Paper).
+   - Aggiunta intercettazione tocco Tastiera (`isKeyboardButtonTouch` ed `EVENT:KEYBOARD`) per attivare/disattivare la tastiera su schermo.
+   - Aggiunta gestione della digitazione interattiva (`handleKeyboardTouch`).
 
-4. **Firmware M5Paper** (`m5paper/src/main.cpp` e `m5paper/m5paper_usb_display/m5paper_usb_display.ino`)
-   - Già configurati e allineati: `M5.BtnL.wasPressed()` invia `EVENT:BTN_UP` e `M5.BtnR.wasPressed()` invia `EVENT:BTN_DOWN`.
+4. **`README.md`**
+   - Documentata la nuova barra laterale dei pulsanti funzione (Home, Refresh e Tastiera virtuale).
+
+5. **Firmware M5Paper** (`m5paper/src/main.cpp` e `m5paper/m5paper_usb_display/m5paper_usb_display.ino`)
+   - Ottimizzato debounce del tocco a 180ms per una digitazione fluida e reattiva sulla tastiera virtuale.
+   - Firmware compilato e flashato con successo su M5Paper.
 
 ---
 

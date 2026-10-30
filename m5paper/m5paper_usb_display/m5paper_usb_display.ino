@@ -361,8 +361,8 @@ void loop() {
         if (!M5.TP.isFingerUp()) {
             tp_finger_t finger = M5.TP.readFinger(0);
             
-            // Debounce touch events and detect edge
-            if (!wasFingerDown || (millis() - lastTouchTime > 350)) {
+            // Debounce touch events and detect edge (180ms for responsive typing)
+            if (!wasFingerDown || (millis() - lastTouchTime > 180)) {
                 lastTouchTime = millis();
                 wasFingerDown = true;
 
