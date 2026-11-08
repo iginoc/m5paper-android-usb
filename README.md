@@ -1,19 +1,17 @@
-# M5Paper & Android USB Companion
+# M5Paper & Android Companion
 
-Questo progetto include due applicazioni pronte all'uso che comunicano in tempo reale via cavo **USB (OTG)** a **115200 baud**:
+Il progetto permette la comunicazione in tempo reale tra Android e M5Paper tramite **USB OTG** o **Wi-Fi**. E' possibile usare un solo trasporto alla volta; passando da uno all'altro, l'app chiude la connessione precedente.
 1. **M5Paper Firmware** (ESP32 + E-ink 4.7" 960x540 + sensori SHT30 e Touch)
-2. **Android App** (Kotlin + Jetpack Compose con driver USB-Serial per CP2104 / CH9102 / FTDI)
+2. **Android App** (Kotlin + Jetpack Compose, USB-Serial e TCP)
 
 ---
 
 ## 📐 Architettura di Comunicazione
 
 ```
-+--------------------+        Cavo USB-C OTG        +--------------------+
-|                    | <==========================> |                    |
-|    Smartphone      |     (USB Host / Serial)      |      M5Paper       |
-|    Android         |                              |   (ESP32 + E-ink)  |
-|                    |   Baud: 2.000.000 (2 Mbps)   |                    |
++--------------------+        USB OTG o Wi-Fi        +--------------------+
+|    Smartphone      | <==========================> |      M5Paper       |
+|      Android       |       USB Serial / TCP       |   (ESP32 + E-ink)  |
 +--------------------+                              +--------------------+
    [Jetpack Compose]                                  [M5EPD Canvas]
    - Invia messaggi                                   - Disegna a schermo
@@ -21,9 +19,9 @@ Questo progetto include due applicazioni pronte all'uso che comunicano in tempo 
    - Riceve touch/eventi                              - Riporta Touch/Tasti
 ```
 
-### Protocollo Seriale (Line-based ASCII @ 2.000.000 baud / 2 Mbps)
+### Trasporto e Protocollo
 
-Ogni comando termina con il carattere newline `\n`.
+USB usa seriale ASCII a 2.000.000 baud. Wi-Fi usa TCP sulla porta `3333`; i comandi e gli eventi sono identici e terminano con `\n`. M5Paper riceve automaticamente l'indirizzo dal router via DHCP. Android lo scopre sulla rete con UDP (`3334`), quindi la configurazione richiede solo SSID e password. Le credenziali restano salvate nel firmware.
 
 | Da | Comando / Formato | Descrizione |
 |---|---|---|
@@ -36,7 +34,10 @@ Ogni comando termina con il carattere newline `\n`.
 | **Android $\to$ M5Paper** | `IMG_BEGIN:<bytes>` | Avvia il trasferimento dello screenshot JPEG (max 512 KB) |
 | **Android $\to$ M5Paper** | `IMG_CHUNK:<bytes>` + dati | Invia un blocco di dati JPEG (2 KB) seguito dai byte binari |
 | **Android $\to$ M5Paper** | `IMG_ABORT` | Annulla il trasferimento dello screenshot corrente |
+| **Android $\to$ M5Paper** | `WIFI_CONFIG:<len_ssid>:<len_password>:<credenziali>` | Salva rete e password e avvia la connessione Wi-Fi |
+| **Android $\to$ M5Paper** | `WIFI_STOP` | Chiude la rete Wi-Fi quando si passa a USB |
 | **M5Paper $\to$ Android** | `READY:M5Paper v1.0` | Inviato all'avvio dell'M5Paper |
+| **M5Paper $\to$ Android** | `WIFI:READY:<ip>` | Indica che il M5Paper e' sulla rete e comunica il suo IP |
 | **M5Paper $\to$ Android** | `ACK:<CMD>` | Riscontro ricezione ed esecuzione comando (`ACK:IMG_BEGIN`, `ACK:CHUNK`, `ACK:IMG_DONE`) |
 | **M5Paper $\to$ Android** | `PONG` | Risposta al ping |
 | **M5Paper $\to$ Android** | `STATUS:bat_mv=X,bat_pct=Y,temp=Z,hum=W,uptime=U` | Telemetria completa (batteria, SHT30, uptime) |
@@ -106,6 +107,14 @@ m5paper-android-usb/
 3. Collega lo smartphone Android in modalità Debug USB o compila l'APK (`./gradlew assembleDebug`).
 4. Installa ed avvia l'app sul telefono.
 
+### Collegamento Wi-Fi
+1. Carica sul M5Paper il firmware aggiornato e collegalo una prima volta al telefono via USB.
+2. Nella sezione **Connessione Wi-Fi**, inserisci SSID e password e premi **Salva**.
+3. Premi **Connetti Wi-Fi**: il firmware si collega via DHCP, Android lo rileva automaticamente e poi chiude USB.
+4. Per tornare, premi **Connetti USB**: l'app richiede lo spegnimento del Wi-Fi e apre la seriale dopo la conferma.
+5. Se non c'e' un collegamento USB, il tasto Wi-Fi puo' riconnettersi alle credenziali gia' salvate sul dispositivo, purche' il telefono sia sulla stessa rete.
+| **Android $\to$ M5Paper** | UDP `M5PAPER_DISCOVER` sulla porta `3334` | Richiede l'indirizzo DHCP del dispositivo |
+
 ---
 
 ## 🔌 3. Collegamento Fisico (Cablaggio e Note OTG)
@@ -131,7 +140,7 @@ m5paper-android-usb/
   - `[TX]` (azzurro): comandi inviati da Android
   - `[RX]` (verde): risposte, telemetria ed eventi da M5Paper
   - `[SYS]` (giallo): stato connessione e driver
-- **📸 Screenshot Mirroring e Controllo Touch Remoto**: Premendo il tasto centrale (click rapido rotellina) su M5Paper, lo smartphone acquisisce automaticamente uno screenshot via `MediaProjection`, lo formatta per il display 960x540 (sempre ruotato di 90° e allineato a destra) e lo invia su USB seriale a 2 Mbps. M5Paper visualizza lo screenshot a pieno schermo (`UPDATE_MODE_GC16`). Toccando lo schermo dell'M5Paper durante la visualizzazione dello screenshot, le coordinate vengono rimappate ed inviate allo smartphone, che simula il tocco via `RemoteTouchAccessibilityService` e aggiorna automaticamente la schermata. Tenendo premuta la rotellina per 1 secondo o premendo 'Home' dall'app si torna alla dashboard!
+- **📸 Screenshot Mirroring e Controllo Touch Remoto**: Premendo il tasto centrale (click rapido rotellina) su M5Paper, lo smartphone acquisisce automaticamente uno screenshot via `MediaProjection`, lo formatta per il display 960x540 (sempre ruotato di 90° e allineato a destra) e lo invia sul trasporto attivo (USB o Wi-Fi). M5Paper visualizza lo screenshot a pieno schermo (`UPDATE_MODE_GC16`). Toccando lo schermo dell'M5Paper durante la visualizzazione dello screenshot, le coordinate vengono rimappate ed inviate allo smartphone, che simula il tocco via `RemoteTouchAccessibilityService` e aggiorna automaticamente la schermata. Tenendo premuta la rotellina per 1 secondo o premendo 'Home' dall'app si torna alla dashboard!
 - **🏠 Barra Pulsanti Funzione su Schermo (Home, Refresh e Tastiera)**: Sulla sinistra dello screenshot visualizzato su M5Paper è presente una barra laterale con pulsanti funzione dotati di icona grafica ad alto contrasto per E-ink:
   - **Tasto Home** (simbolo casetta): invia il comando di sistema `GLOBAL_ACTION_HOME` allo smartphone via `AccessibilityService`, tornando alla schermata principale e aggiornando automaticamente lo screenshot.
   - **Tasto Refresh** (simbolo freccia circolare di ricarica): posizionato subito sotto il tasto Home, attiva istantaneamente la cattura e lo scaricamento di un nuovo screenshot dello smartphone (funzione identica alla pressione del pulsante centrale / click rotellina dell'M5Paper).

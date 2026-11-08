@@ -24,12 +24,22 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
+import java.net.InetAddress
+import java.net.Socket
 import java.nio.charset.StandardCharsets
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 
 sealed class ConnectionStatus {
     object Disconnected : ConnectionStatus()
     object Connecting : ConnectionStatus()
     data class Connected(val deviceName: String, val vid: Int, val pid: Int, val baudRate: Int) : ConnectionStatus()
+    data class WifiConnected(val host: String, val port: Int) : ConnectionStatus()
     data class Error(val message: String) : ConnectionStatus()
 }
 
@@ -39,6 +49,9 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
         private const val TAG = "UsbSerialController"
         const val ACTION_USB_PERMISSION = "com.example.m5paperusb.USB_PERMISSION"
         const val DEFAULT_BAUD_RATE = 2000000 // Hardware maximum: 2 Mbps for CP2104 / CH9102 & ESP32
+        const val DEFAULT_WIFI_PORT = 3333
+        private const val WIFI_DISCOVERY_PORT = 3334
+        private const val WIFI_DISCOVERY_QUERY = "M5PAPER_DISCOVER"
         private const val READ_WAIT_MILLIS = 200
         private const val WRITE_WAIT_MILLIS = 2000
     }
@@ -51,6 +64,10 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
 
     private var usbSerialPort: UsbSerialPort? = null
     private var ioManager: SerialInputOutputManager? = null
+    private var wifiSocket: Socket? = null
+    private var wifiJob: Job? = null
+    private val transportScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val writeLock = Any()
     private val lineBuffer = StringBuilder()
 
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
@@ -111,6 +128,24 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
     }
 
     fun scanAndConnect(baudRate: Int = DEFAULT_BAUD_RATE) {
+        val activeWifiJob = wifiJob
+        val switchingFromWifi = _connectionStatus.value is ConnectionStatus.WifiConnected ||
+            wifiSocket != null || (activeWifiJob?.isActive == true && usbSerialPort != null)
+        activeWifiJob?.cancel()
+        transportScope.launch {
+            val activeSocket = wifiSocket
+            if (activeSocket?.isConnected == true && !activeSocket.isClosed) {
+                sendCommandAndWaitResponse("WIFI_STOP", "ACK:WIFI_STOP", 1500)
+            } else if (usbSerialPort != null && switchingFromWifi) {
+                sendCommandAndWaitResponse("WIFI_STOP", "ACK:WIFI_STOP", 1500)
+            }
+            closeWifiSocket()
+            disconnectUsb(updateStatus = false)
+            beginUsbConnection(baudRate)
+        }
+    }
+
+    private fun beginUsbConnection(baudRate: Int) {
         activeBaudRate = baudRate
         _connectionStatus.value = ConnectionStatus.Connecting
         val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
@@ -176,6 +211,7 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
                 pid = device.productId,
                 baudRate = activeBaudRate
             )
+            sendLine("WIFI_STOP")
             Log.d(TAG, "Connected to ${device.deviceName} at $activeBaudRate baud.")
         } catch (e: Exception) {
             Log.e(TAG, "Error connecting to USB device", e)
@@ -185,6 +221,22 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
     }
 
     fun sendLine(message: String): Boolean {
+        val socket = wifiSocket
+        if (socket?.isConnected == true && !socket.isClosed) {
+            val formatted = if (message.endsWith("\n")) message else "$message\n"
+            return try {
+                synchronized(writeLock) {
+                    socket.getOutputStream().write(formatted.toByteArray(StandardCharsets.UTF_8))
+                    socket.getOutputStream().flush()
+                }
+                true
+            } catch (e: IOException) {
+                Log.e(TAG, "Wi-Fi write failed", e)
+                disconnectWifi()
+                _connectionStatus.value = ConnectionStatus.Error("Wi-Fi write failed: ${e.localizedMessage}")
+                false
+            }
+        }
         val port = usbSerialPort ?: return false
         val formatted = if (message.endsWith("\n")) message else "$message\n"
         return try {
@@ -200,6 +252,21 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
     }
 
     fun writeRawBytes(data: ByteArray, timeoutMillis: Int = WRITE_WAIT_MILLIS): Boolean {
+        val socket = wifiSocket
+        if (socket?.isConnected == true && !socket.isClosed) {
+            return try {
+                synchronized(writeLock) {
+                    socket.getOutputStream().write(data)
+                    socket.getOutputStream().flush()
+                }
+                true
+            } catch (e: IOException) {
+                Log.e(TAG, "Wi-Fi raw write failed", e)
+                disconnectWifi()
+                _connectionStatus.value = ConnectionStatus.Error("Wi-Fi write failed: ${e.localizedMessage}")
+                false
+            }
+        }
         val port = usbSerialPort ?: return false
         return try {
             port.write(data, timeoutMillis)
@@ -261,7 +328,130 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
         }
     }
 
+    fun connectWifi(ssid: String, password: String) {
+        disconnectWifi()
+        if (ssid.isBlank()) {
+            _connectionStatus.value = ConnectionStatus.Error("Inserisci il nome della rete Wi-Fi")
+            return
+        }
+        if (ssid.contains('\n') || ssid.contains('\r') || password.contains('\n') || password.contains('\r')) {
+            _connectionStatus.value = ConnectionStatus.Error("SSID e password non possono contenere ritorni a capo")
+            return
+        }
+        if (ssid.toByteArray(StandardCharsets.UTF_8).size > 32 || password.toByteArray(StandardCharsets.UTF_8).size > 63) {
+            _connectionStatus.value = ConnectionStatus.Error("SSID o password superano la lunghezza supportata dal Wi-Fi")
+            return
+        }
+
+        _connectionStatus.value = ConnectionStatus.Connecting
+        wifiJob = transportScope.launch {
+            if (usbSerialPort != null) {
+                val ssidBytes = ssid.toByteArray(StandardCharsets.UTF_8)
+                val passwordBytes = password.toByteArray(StandardCharsets.UTF_8)
+                val credentials = String(ssidBytes, StandardCharsets.UTF_8) + String(passwordBytes, StandardCharsets.UTF_8)
+                val configure = "WIFI_CONFIG:${ssidBytes.size}:${passwordBytes.size}:$credentials"
+                if (!sendCommandAndWaitResponse(configure, "ACK:WIFI_CONFIG", 5000)) {
+                    _connectionStatus.value = ConnectionStatus.Error("Configurazione Wi-Fi non confermata da M5Paper")
+                    return@launch
+                }
+            }
+
+            val discoveredHost = discoverM5Paper()
+            if (discoveredHost == null) {
+                _connectionStatus.value = ConnectionStatus.Error("M5Paper non trovato sulla rete Wi-Fi. Verifica che telefono e M5Paper siano sulla stessa rete.")
+                return@launch
+            }
+
+            var connectedSocket: Socket? = null
+            for (attempt in 0 until 5) {
+                try {
+                    connectedSocket = Socket().apply {
+                        tcpNoDelay = true
+                        connect(InetSocketAddress(discoveredHost, DEFAULT_WIFI_PORT), 1500)
+                    }
+                    break
+                } catch (_: IOException) {
+                    connectedSocket?.close()
+                    connectedSocket = null
+                    if (attempt < 4) delay(300)
+                }
+            }
+
+            val socket = connectedSocket
+            if (socket == null) {
+                _connectionStatus.value = ConnectionStatus.Error("Connessione Wi-Fi a $discoveredHost:$DEFAULT_WIFI_PORT non riuscita")
+                return@launch
+            }
+
+            disconnectUsb(updateStatus = false)
+            wifiSocket = socket
+            _connectionStatus.value = ConnectionStatus.WifiConnected(discoveredHost, DEFAULT_WIFI_PORT)
+            transportScope.launch { readWifiSocket(socket) }
+        }
+    }
+
+    private fun discoverM5Paper(): String? {
+        val query = WIFI_DISCOVERY_QUERY.toByteArray(StandardCharsets.US_ASCII)
+        return try {
+            DatagramSocket().use { socket ->
+                socket.broadcast = true
+                socket.soTimeout = 700
+                val request = DatagramPacket(
+                    query,
+                    query.size,
+                    InetAddress.getByName("255.255.255.255"),
+                    WIFI_DISCOVERY_PORT
+                )
+                val responseBuffer = ByteArray(128)
+                repeat(12) {
+                    socket.send(request)
+                    val response = DatagramPacket(responseBuffer, responseBuffer.size)
+                    try {
+                        socket.receive(response)
+                        val payload = String(response.data, response.offset, response.length, StandardCharsets.US_ASCII)
+                        val parts = payload.split(':')
+                        if (parts.size == 3 && parts[0] == "M5PAPER" && parts[2].toIntOrNull() == DEFAULT_WIFI_PORT) {
+                            return parts[1]
+                        }
+                    } catch (_: java.net.SocketTimeoutException) {
+                        // Keep searching while the DHCP connection and UDP response become available.
+                    }
+                }
+            }
+            null
+        } catch (e: IOException) {
+            Log.e(TAG, "Wi-Fi device discovery failed", e)
+            null
+        }
+    }
+
+    fun disconnectWifi(notifyDevice: Boolean = false) {
+        if (notifyDevice && wifiSocket?.isConnected == true) {
+            sendLine("WIFI_STOP")
+        } else if (notifyDevice && wifiJob != null && usbSerialPort != null) {
+            sendLine("WIFI_STOP")
+        }
+        wifiJob?.cancel()
+        wifiJob = null
+        closeWifiSocket()
+        if (_connectionStatus.value is ConnectionStatus.WifiConnected) {
+            _connectionStatus.value = ConnectionStatus.Disconnected
+        }
+    }
+
+    private fun closeWifiSocket() {
+        try {
+            wifiSocket?.close()
+        } catch (_: IOException) {}
+        wifiSocket = null
+    }
+
     fun disconnect() {
+        disconnectWifi(notifyDevice = true)
+        disconnectUsb()
+    }
+
+    private fun disconnectUsb(updateStatus: Boolean = true) {
         try {
             ioManager?.listener = null
             ioManager?.stop()
@@ -273,7 +463,7 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
         } catch (ignored: Exception) {}
         usbSerialPort = null
 
-        _connectionStatus.value = ConnectionStatus.Disconnected
+        if (updateStatus) _connectionStatus.value = ConnectionStatus.Disconnected
     }
 
     fun cleanUp() {
@@ -281,10 +471,35 @@ class UsbSerialController(private val context: Context) : SerialInputOutputManag
         try {
             context.unregisterReceiver(usbReceiver)
         } catch (ignored: Exception) {}
+        transportScope.cancel()
     }
 
     override fun onNewData(data: ByteArray?) {
         if (data == null || data.isEmpty()) return
+        consumeIncomingData(data)
+    }
+
+    private fun readWifiSocket(socket: Socket) {
+        val input = socket.getInputStream()
+        val buffer = ByteArray(4096)
+        try {
+            while (!socket.isClosed && socket.isConnected) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count > 0) consumeIncomingData(buffer.copyOf(count))
+            }
+        } catch (e: IOException) {
+            if (!socket.isClosed) Log.e(TAG, "Wi-Fi read failed", e)
+        } finally {
+            if (wifiSocket === socket) {
+                wifiSocket = null
+                _connectionStatus.value = ConnectionStatus.Disconnected
+            }
+            try { socket.close() } catch (_: IOException) {}
+        }
+    }
+
+    private fun consumeIncomingData(data: ByteArray) {
         val chunk = String(data, StandardCharsets.UTF_8)
         
         synchronized(lineBuffer) {

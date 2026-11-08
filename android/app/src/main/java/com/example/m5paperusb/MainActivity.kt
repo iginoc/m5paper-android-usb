@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -83,6 +84,9 @@ class MainActivity : ComponentActivity() {
                     screenshotManager = screenshotManager,
                     onConnectClick = { baud -> usbController.scanAndConnect(baud) },
                     onDisconnectClick = { usbController.disconnect() },
+                    onConnectWifiClick = { ssid, password ->
+                        usbController.connectWifi(ssid, password)
+                    },
                     onSend = { cmd -> usbController.sendLine(cmd) }
                 )
             }
@@ -102,9 +106,11 @@ fun MainScreen(
     screenshotManager: ScreenshotManager,
     onConnectClick: (Int) -> Unit,
     onDisconnectClick: () -> Unit,
+    onConnectWifiClick: (String, String) -> Unit,
     onSend: (String) -> Boolean
 ) {
     val context = LocalContext.current
+    val wifiPreferences = remember { context.getSharedPreferences("m5paper_wifi", Context.MODE_PRIVATE) }
     val connectionStatus by usbController.connectionStatus.collectAsState()
     val isCaptureRunning by ScreenCaptureService.isRunning.collectAsState()
     val transferState by screenshotManager.transferState.collectAsState()
@@ -116,6 +122,11 @@ fun MainScreen(
     var inputText by remember { mutableStateOf("") }
     var selectedBaudRate by remember { mutableStateOf(UsbSerialController.DEFAULT_BAUD_RATE) }
     var selectedKeyAction by remember { mutableStateOf(UpDownKeyAction.SCROLL) }
+    var wifiSsid by remember { mutableStateOf(wifiPreferences.getString("ssid", "") ?: "") }
+    var wifiPassword by remember { mutableStateOf(wifiPreferences.getString("password", "") ?: "") }
+    val isUsbConnected = connectionStatus is ConnectionStatus.Connected
+    val isWifiConnected = connectionStatus is ConnectionStatus.WifiConnected
+    val isTransportConnected = isUsbConnected || isWifiConnected
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
     val listState = rememberLazyListState()
@@ -279,8 +290,9 @@ fun MainScreen(
         usbController.incomingLines.collect { line ->
             addLog(Direction.RX, line)
 
-            // Parse STATUS packet
-            if (line.startsWith("STATUS:")) {
+            if (line.startsWith("WIFI:READY:")) {
+                addLog(Direction.INFO, "M5Paper connesso alla rete Wi-Fi via DHCP")
+            } else if (line.startsWith("STATUS:")) {
                 try {
                     val params = line.substring(7).split(",")
                     var batMv = telemetry.batteryMv
@@ -496,10 +508,14 @@ fun MainScreen(
                 onSend("STATUS?")
             }
             is ConnectionStatus.Disconnected -> {
-                addLog(Direction.INFO, "USB Disconnected")
+                addLog(Direction.INFO, "Connessione disconnessa")
             }
             is ConnectionStatus.Connecting -> {
                 addLog(Direction.INFO, "Connecting to USB device @ $selectedBaudRate baud...")
+            }
+            is ConnectionStatus.WifiConnected -> {
+                addLog(Direction.INFO, "Connesso via Wi-Fi a ${status.host}:${status.port}")
+                onSend("STATUS?")
             }
             is ConnectionStatus.Error -> {
                 addLog(Direction.ERROR, status.message)
@@ -513,7 +529,7 @@ fun MainScreen(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "M5Paper USB Companion",
+                            "M5Paper Companion",
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp
                         )
@@ -524,7 +540,7 @@ fun MainScreen(
                                 .clip(CircleShape)
                                 .background(
                                     when (connectionStatus) {
-                                        is ConnectionStatus.Connected -> Color(0xFF22C55E)
+                                        is ConnectionStatus.Connected, is ConnectionStatus.WifiConnected -> Color(0xFF22C55E)
                                         is ConnectionStatus.Connecting -> Color(0xFFEAB308)
                                         else -> Color(0xFFEF4444)
                                     }
@@ -533,9 +549,13 @@ fun MainScreen(
                     }
                 },
                 actions = {
-                    if (connectionStatus is ConnectionStatus.Connected) {
+                    if (isWifiConnected) {
+                        IconButton(onClick = { onConnectClick(selectedBaudRate) }) {
+                            Icon(Icons.Default.Usb, contentDescription = "Connetti USB e spegni Wi-Fi")
+                        }
+                    } else if (isUsbConnected) {
                         IconButton(onClick = onDisconnectClick) {
-                            Icon(Icons.Default.UsbOff, contentDescription = "Disconnect")
+                            Icon(Icons.Default.UsbOff, contentDescription = "Disconnetti USB")
                         }
                     } else {
                         IconButton(onClick = { onConnectClick(selectedBaudRate) }) {
@@ -572,7 +592,8 @@ fun MainScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = when (val s = connectionStatus) {
-                                    is ConnectionStatus.Connected -> "Connected: ${s.deviceName}"
+                                    is ConnectionStatus.Connected -> "USB connesso: ${s.deviceName}"
+                                    is ConnectionStatus.WifiConnected -> "Connesso via Wi-Fi: ${s.host}:${s.port}"
                                     is ConnectionStatus.Connecting -> "Connecting..."
                                     is ConnectionStatus.Disconnected -> "Disconnected"
                                     is ConnectionStatus.Error -> "Error: ${s.message}"
@@ -584,6 +605,7 @@ fun MainScreen(
                             Text(
                                 text = when (val s = connectionStatus) {
                                     is ConnectionStatus.Connected -> "${s.baudRate} Baud (${if (s.baudRate >= 1000000) "%.1f Mbps".format(s.baudRate / 1000000.0) else "${s.baudRate / 1000} Kbps"}) | 8N1"
+                                    is ConnectionStatus.WifiConnected -> "TCP ${s.host}:${s.port}"
                                     else -> "Target Speed: ${selectedBaudRate} Baud (${if (selectedBaudRate >= 1000000) "%.1f Mbps".format(selectedBaudRate / 1000000.0) else "${selectedBaudRate / 1000} Kbps"})"
                                 },
                                 fontSize = 12.sp,
@@ -591,24 +613,31 @@ fun MainScreen(
                             )
                         }
 
-                        if (connectionStatus is ConnectionStatus.Connected) {
+                        if (isWifiConnected) {
+                            Button(
+                                onClick = { onConnectClick(selectedBaudRate) },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text("Connetti USB")
+                            }
+                        } else if (isUsbConnected) {
                             Button(
                                 onClick = onDisconnectClick,
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
                             ) {
-                                Text("Disconnect")
+                                Text("Disconnetti USB")
                             }
                         } else {
                             Button(
                                 onClick = { onConnectClick(selectedBaudRate) },
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                             ) {
-                                Text("Connect")
+                                Text("Connetti USB")
                             }
                         }
                     }
 
-                    if (connectionStatus !is ConnectionStatus.Connected) {
+                    if (!isTransportConnected) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -631,13 +660,70 @@ fun MainScreen(
                 }
             }
 
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Connessione Wi-Fi", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    OutlinedTextField(
+                        value = wifiSsid,
+                        onValueChange = { wifiSsid = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Nome rete (SSID)") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = wifiPassword,
+                        onValueChange = { wifiPassword = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Password Wi-Fi") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                wifiPreferences.edit()
+                                    .putString("ssid", wifiSsid)
+                                    .putString("password", wifiPassword)
+                                    .apply()
+                                Toast.makeText(context, "Configurazione Wi-Fi salvata", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = wifiSsid.isNotBlank()
+                        ) {
+                            Text("Salva")
+                        }
+                        Button(
+                            onClick = {
+                                if (isWifiConnected) onDisconnectClick()
+                                else onConnectWifiClick(wifiSsid, wifiPassword)
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = (isWifiConnected || wifiSsid.isNotBlank()) && connectionStatus !is ConnectionStatus.Connecting
+                        ) {
+                            Text(if (isWifiConnected) "Disconnetti Wi-Fi" else "Connetti Wi-Fi")
+                        }
+                    }
+                }
+            }
+
             // 2. SCREENSHOT & SCREEN MIRRORING CARD (FEATURE REQUEST)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // Header Row with Title and Icon
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -648,7 +734,7 @@ fun MainScreen(
                                 Icons.Default.Screenshot,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(22.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
@@ -658,52 +744,58 @@ fun MainScreen(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         }
+                    }
 
-                        // Status Badges
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AssistChip(
-                                onClick = {},
-                                label = {
-                                    Text(
-                                        if (isCaptureRunning) "Cattura ON" else "Cattura OFF",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                },
-                                leadingIcon = {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(if (isCaptureRunning) Color(0xFF22C55E) else Color(0xFFEF4444))
-                                    )
-                                }
-                            )
+                    // Status Badges Row (Clean and uncrowded)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AssistChip(
+                            onClick = {},
+                            label = {
+                                Text(
+                                    if (isCaptureRunning) "Cattura ON" else "Cattura OFF",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            },
+                            leadingIcon = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isCaptureRunning) Color(0xFF22C55E) else Color(0xFFEF4444))
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
 
-                            AssistChip(
-                                onClick = {
-                                    if (!isRemoteTouchActive) {
-                                        RemoteTouchAccessibilityService.openAccessibilitySettings(context)
-                                        Toast.makeText(context, "Attiva 'M5Paper USB Companion' in Accessibilità", Toast.LENGTH_LONG).show()
-                                    }
-                                },
-                                label = {
-                                    Text(
-                                        if (isRemoteTouchActive) "Touch ON" else "Touch OFF",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                },
-                                leadingIcon = {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(if (isRemoteTouchActive) Color(0xFF22C55E) else Color(0xFFEF4444))
-                                    )
+                        AssistChip(
+                            onClick = {
+                                if (!isRemoteTouchActive) {
+                                    RemoteTouchAccessibilityService.openAccessibilitySettings(context)
+                                    Toast.makeText(context, "Attiva 'M5Paper USB Companion' in Accessibilità", Toast.LENGTH_LONG).show()
                                 }
-                            )
-                        }
+                            },
+                            label = {
+                                Text(
+                                    if (isRemoteTouchActive) "Touch ON" else "Touch OFF",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            },
+                            leadingIcon = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isRemoteTouchActive) Color(0xFF22C55E) else Color(0xFFEF4444))
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
 
                     Text(
@@ -719,7 +811,7 @@ fun MainScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -742,10 +834,9 @@ fun MainScreen(
                                         RemoteTouchAccessibilityService.openAccessibilitySettings(context)
                                         Toast.makeText(context, "Attiva 'M5Paper USB Companion' in Accessibilità", Toast.LENGTH_LONG).show()
                                     },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    modifier = Modifier.height(30.dp)
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                 ) {
-                                    Text("Attiva", fontSize = 11.sp)
+                                    Text("Attiva", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                         }
@@ -763,21 +854,23 @@ fun MainScreen(
                                     mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
                                 },
                                 modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.ScreenShare, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Abilita Cattura Schermo")
+                                Text("Abilita Cattura Schermo", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             }
                         } else {
                             Button(
                                 onClick = { triggerScreenshotCapture() },
                                 modifier = Modifier.weight(1f),
-                                enabled = connectionStatus is ConnectionStatus.Connected && transferState !is ScreenshotTransferState.Sending
+                                enabled = isTransportConnected && transferState !is ScreenshotTransferState.Sending,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                             ) {
                                 Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Invia Ora")
+                                Text("Invia Ora", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             }
 
                             OutlinedButton(
@@ -785,28 +878,45 @@ fun MainScreen(
                                     ScreenCaptureService.stopService(context)
                                     isShowingScreenshot = false
                                 },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.StopScreenShare, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Disabilita")
+                                Text("Disabilita", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
 
-
                     // Tasti Su/Giù action mode selector
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text("Tasti Su/Giù:", fontSize = 11.sp, color = Color.Gray)
-                        UpDownKeyAction.values().forEach { action ->
-                            FilterChip(
-                                selected = selectedKeyAction == action,
-                                onClick = { selectedKeyAction = action },
-                                label = { Text(action.label, fontSize = 11.sp) }
-                            )
+                        Text(
+                            "Azione Tasti Su/Giù su M5Paper:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            UpDownKeyAction.values().forEach { action ->
+                                FilterChip(
+                                    selected = selectedKeyAction == action,
+                                    onClick = { selectedKeyAction = action },
+                                    label = {
+                                        Text(
+                                            action.label,
+                                            fontSize = 11.sp,
+                                            maxLines = 1
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
                         }
                     }
 

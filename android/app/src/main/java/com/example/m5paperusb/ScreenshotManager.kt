@@ -80,8 +80,9 @@ class ScreenshotManager(private val usbController: UsbSerialController) {
     }
 
     private suspend fun doCaptureAndSend(): Boolean {
-        if (usbController.connectionStatus.value !is ConnectionStatus.Connected) {
-            _transferState.value = ScreenshotTransferState.Error("M5Paper non collegato via USB")
+        val status = usbController.connectionStatus.value
+        if (status !is ConnectionStatus.Connected && status !is ConnectionStatus.WifiConnected) {
+            _transferState.value = ScreenshotTransferState.Error("M5Paper non collegato")
             return false
         }
 

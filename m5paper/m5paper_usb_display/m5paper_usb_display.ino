@@ -7,6 +7,9 @@
  */
 
 #include <M5EPD.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <Preferences.h>
 
 // Canvas buffer for the 960x540 landscape e-ink display
 M5EPD_Canvas canvas(&M5.EPD);
@@ -36,6 +39,24 @@ unsigned long lastHeartbeat = 0;
 unsigned long lastTouchTime = 0;
 bool wasFingerDown = false;
 String lastTouchInfo = "None";
+static const uint16_t WIFI_PORT = 3333;
+static const uint16_t WIFI_DISCOVERY_PORT = 3334;
+WiFiServer wifiServer(WIFI_PORT);
+WiFiUDP discoveryUdp;
+WiFiClient wifiClient;
+Preferences preferences;
+bool wifiServerStarted = false;
+bool discoveryStarted = false;
+bool wifiStopPending = false;
+Stream* responseStream = nullptr;
+char wifiRxBuffer[BUFFER_SIZE];
+size_t wifiRxIndex = 0;
+
+void sendLine(const String& line) {
+    if (responseStream != nullptr) responseStream->println(line);
+    else if (wifiClient && wifiClient.connected()) wifiClient.println(line);
+    else Serial.println(line);
+}
 
 // Helper: battery percentage calculation
 int getBatteryPercentage() {
@@ -65,7 +86,7 @@ void renderUI(bool fullRefresh = false) {
     canvas.fillRect(0, 0, 960, 50, 15); // Dark header bar
     canvas.setTextSize(3);
     canvas.setTextColor(0, 15); // White text on black background
-    canvas.drawString("M5Paper  <--[USB]-->  Android", 20, 14);
+    canvas.drawString("M5Paper  <--[USB/WiFi]-->  Android", 20, 14);
 
     // Header info: Battery & Sensor
     M5.SHT30.UpdateData();
@@ -179,8 +200,39 @@ void renderUI(bool fullRefresh = false) {
 }
 
 // Process an incoming command line from Android
-void processCommand(const String& cmd) {
-    if (cmd.startsWith("MSG:")) {
+void processCommand(const String& cmd, Stream& source) {
+    responseStream = &source;
+    if (cmd.startsWith("WIFI_CONFIG:")) {
+        String payload = cmd.substring(12);
+        int firstSeparator = payload.indexOf(':');
+        int secondSeparator = firstSeparator < 0 ? -1 : payload.indexOf(':', firstSeparator + 1);
+        int ssidLength = firstSeparator < 0 ? -1 : payload.substring(0, firstSeparator).toInt();
+        int passwordLength = secondSeparator < 0 ? -1 : payload.substring(firstSeparator + 1, secondSeparator).toInt();
+        int credentialsStart = secondSeparator + 1;
+        if (ssidLength > 0 && ssidLength <= 32 && passwordLength >= 0 && passwordLength <= 63 &&
+            payload.length() == credentialsStart + ssidLength + passwordLength) {
+            String ssid = payload.substring(credentialsStart, credentialsStart + ssidLength);
+            String password = payload.substring(credentialsStart + ssidLength);
+            preferences.putString("ssid", ssid);
+            preferences.putString("password", password);
+            wifiClient.stop();
+            if (wifiServerStarted) wifiServer.end();
+            if (discoveryStarted) discoveryUdp.stop();
+            wifiServerStarted = false;
+            discoveryStarted = false;
+            WiFi.mode(WIFI_STA);
+            WiFi.disconnect();
+            WiFi.begin(ssid.c_str(), password.c_str());
+            sendLine("ACK:WIFI_CONFIG");
+        } else {
+            sendLine("ERR:WIFI_CONFIG");
+        }
+    }
+    else if (cmd.equalsIgnoreCase("WIFI_STOP")) {
+        sendLine("ACK:WIFI_STOP");
+        wifiStopPending = true;
+    }
+    else if (cmd.startsWith("MSG:")) {
         isShowingScreenshot = false;
         String msg = cmd.substring(4);
         if (currentMessage.length() > 0 && currentMessage != "Ready for Android connection.\nConnect USB cable and tap 'Connect'.") {
@@ -188,7 +240,7 @@ void processCommand(const String& cmd) {
         }
         currentMessage = msg;
         renderUI(false);
-        Serial.println("ACK:MSG");
+        sendLine("ACK:MSG");
     }
     else if (cmd.equalsIgnoreCase("CLEAR")) {
         isShowingScreenshot = false;
@@ -197,10 +249,10 @@ void processCommand(const String& cmd) {
         }
         currentMessage = "(Screen cleared by Android)";
         renderUI(false);
-        Serial.println("ACK:CLEAR");
+        sendLine("ACK:CLEAR");
     }
     else if (cmd.equalsIgnoreCase("PING")) {
-        Serial.println("PONG");
+        sendLine("PONG");
     }
     else if (cmd.equalsIgnoreCase("STATUS?")) {
         M5.SHT30.UpdateData();
@@ -213,28 +265,28 @@ void processCommand(const String& cmd) {
         char resp[128];
         snprintf(resp, sizeof(resp), "STATUS:bat_mv=%u,bat_pct=%d,temp=%.1f,hum=%.1f,uptime=%lu",
                  bat_mv, bat_pct, temp, hum, uptime);
-        Serial.println(resp);
+        sendLine(resp);
     }
     else if (cmd.startsWith("BUZZ")) {
-        Serial.println("ACK:BUZZ");
+        sendLine("ACK:BUZZ");
     }
     else if (cmd.equalsIgnoreCase("REFRESH")) {
         isShowingScreenshot = false;
         renderUI(true); // Force full GC16 refresh
-        Serial.println("ACK:REFRESH");
+        sendLine("ACK:REFRESH");
     }
     else if (cmd.equalsIgnoreCase("DASHBOARD")) {
         isShowingScreenshot = false;
         renderUI(true);
-        Serial.println("ACK:DASHBOARD");
+        sendLine("ACK:DASHBOARD");
     }
     else if (cmd.startsWith("IMG_BEGIN:")) {
         imgExpectedSize = cmd.substring(10).toInt();
         imgBufferPos = 0;
         if (imgBuffer != nullptr && imgExpectedSize > 0 && imgExpectedSize <= MAX_IMG_SIZE) {
-            Serial.println("ACK:IMG_BEGIN");
+            sendLine("ACK:IMG_BEGIN");
         } else {
-            Serial.println("ERR:IMG_SIZE");
+            sendLine("ERR:IMG_SIZE");
         }
     }
     else if (cmd.startsWith("IMG_CHUNK:")) {
@@ -243,8 +295,8 @@ void processCommand(const String& cmd) {
             size_t bytesRead = 0;
             unsigned long t0 = millis();
             while (bytesRead < chunkLen && (millis() - t0 < 4000)) {
-                if (Serial.available()) {
-                    size_t n = Serial.readBytes((char*)(imgBuffer + imgBufferPos + bytesRead), chunkLen - bytesRead);
+                if (source.available()) {
+                    size_t n = source.readBytes((char*)(imgBuffer + imgBufferPos + bytesRead), chunkLen - bytesRead);
                     bytesRead += n;
                     t0 = millis();
                 } else {
@@ -253,7 +305,7 @@ void processCommand(const String& cmd) {
             }
             if (bytesRead == chunkLen) {
                 imgBufferPos += chunkLen;
-                Serial.println("ACK:CHUNK");
+                sendLine("ACK:CHUNK");
                 if (imgBufferPos >= imgExpectedSize) {
                     isShowingScreenshot = true;
                     canvas.clear();
@@ -261,23 +313,20 @@ void processCommand(const String& cmd) {
                     bool ok = canvas.drawJpg(imgBuffer, imgExpectedSize, 0, 0);
                     if (ok) {
                         canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-                        Serial.println("ACK:IMG_DONE");
+                        sendLine("ACK:IMG_DONE");
                     } else {
-                        Serial.println("ERR:JPG_DECODE");
+                        sendLine("ERR:JPG_DECODE");
                     }
                     imgExpectedSize = 0;
                     imgBufferPos = 0;
                 }
             } else {
-                Serial.print("ERR:CHUNK_TIMEOUT:got=");
-                Serial.print(bytesRead);
-                Serial.print(":expected=");
-                Serial.println(chunkLen);
+                sendLine("ERR:CHUNK_TIMEOUT:got=" + String(bytesRead) + ":expected=" + String(chunkLen));
                 imgExpectedSize = 0;
                 imgBufferPos = 0;
             }
         } else {
-            Serial.println("ERR:CHUNK_OVERFLOW");
+            sendLine("ERR:CHUNK_OVERFLOW");
             imgExpectedSize = 0;
             imgBufferPos = 0;
         }
@@ -285,13 +334,13 @@ void processCommand(const String& cmd) {
     else if (cmd.equalsIgnoreCase("IMG_ABORT")) {
         imgExpectedSize = 0;
         imgBufferPos = 0;
-        Serial.println("ACK:IMG_ABORT");
+        sendLine("ACK:IMG_ABORT");
     }
     else {
         // Echo unknown command
-        Serial.print("ERR:UNKNOWN_CMD:");
-        Serial.println(cmd);
+        sendLine("ERR:UNKNOWN_CMD:" + cmd);
     }
+    responseStream = nullptr;
 }
 
 void setup() {
@@ -307,6 +356,14 @@ void setup() {
     Serial.setRxBufferSize(16384);
     Serial.begin(SERIAL_BAUD_RATE);
     Serial.setTimeout(1500);
+    preferences.begin("m5paper", false);
+
+    String savedSsid = preferences.getString("ssid", "");
+    String savedPassword = preferences.getString("password", "");
+    if (savedSsid.length() > 0) {
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(savedSsid.c_str(), savedPassword.c_str());
+    }
 
     // Prepare e-ink canvas buffer in PSRAM
     canvas.createCanvas(960, 540);
@@ -326,25 +383,69 @@ void setup() {
 }
 
 void loop() {
-    // 1. Check for incoming USB serial data
-    while (Serial.available()) {
-        char c = (char)Serial.read();
-        if (c == '\r') continue; // Ignore carriage return to ensure clean line ends
-        if (c == '\n') {
-            if (rxIndex > 0) {
-                rxBuffer[rxIndex] = '\0';
-                String line = String(rxBuffer);
-                line.trim();
-                rxIndex = 0;
-                if (line.length() > 0) {
-                    processCommand(line);
+    if (WiFi.status() == WL_CONNECTED && !wifiServerStarted) {
+        wifiServer.begin();
+        wifiServer.setNoDelay(true);
+        wifiServerStarted = true;
+        discoveryStarted = discoveryUdp.begin(WIFI_DISCOVERY_PORT);
+        sendLine("WIFI:READY:" + WiFi.localIP().toString());
+    }
+    if (discoveryStarted) {
+        int packetSize = discoveryUdp.parsePacket();
+        if (packetSize > 0) {
+            char query[32];
+            int bytesRead = discoveryUdp.read(query, sizeof(query) - 1);
+            if (bytesRead >= 0) {
+                query[bytesRead] = '\0';
+                if (String(query) == "M5PAPER_DISCOVER") {
+                    String response = "M5PAPER:" + WiFi.localIP().toString() + ":" + String(WIFI_PORT);
+                    discoveryUdp.beginPacket(discoveryUdp.remoteIP(), discoveryUdp.remotePort());
+                    discoveryUdp.write((const uint8_t*)response.c_str(), response.length());
+                    discoveryUdp.endPacket();
                 }
             }
-        } else {
-            if (rxIndex < BUFFER_SIZE - 1) {
-                rxBuffer[rxIndex++] = c;
+        }
+    }
+    if (wifiServerStarted && (!wifiClient || !wifiClient.connected())) {
+        wifiClient = wifiServer.available();
+        if (wifiClient) {
+            wifiClient.setTimeout(1500);
+            wifiClient.setNoDelay(true);
+            sendLine("READY:M5Paper v1.0");
+        }
+    }
+
+    auto readCommands = [](Stream& source, char* buffer, size_t& index) {
+        while (source.available()) {
+            char c = (char)source.read();
+            if (c == '\r') continue;
+            if (c == '\n') {
+                if (index > 0) {
+                    buffer[index] = '\0';
+                    String line = String(buffer);
+                    line.trim();
+                    index = 0;
+                    if (line.length() > 0) processCommand(line, source);
+                }
+            } else if (index < BUFFER_SIZE - 1) {
+                buffer[index++] = c;
             }
         }
+    };
+    readCommands(Serial, rxBuffer, rxIndex);
+    if (wifiClient && wifiClient.connected()) {
+        readCommands(wifiClient, wifiRxBuffer, wifiRxIndex);
+    }
+
+    if (wifiStopPending) {
+        wifiStopPending = false;
+        wifiClient.stop();
+        if (wifiServerStarted) wifiServer.end();
+        if (discoveryStarted) discoveryUdp.stop();
+        wifiServerStarted = false;
+        discoveryStarted = false;
+        WiFi.disconnect(true, false);
+        WiFi.mode(WIFI_OFF);
     }
 
     // While an image transfer is actively in progress, prioritize high-speed serial
@@ -378,7 +479,7 @@ void loop() {
                 char touchStr[64];
                 snprintf(touchStr, sizeof(touchStr), "TOUCH:x=%d,y=%d,size=%d,scr=%d", 
                          screenX, screenY, finger.size, isShowingScreenshot ? 1 : 0);
-                Serial.println(touchStr);
+                sendLine(touchStr);
 
                 lastTouchInfo = String("X:") + screenX + " Y:" + screenY;
                 // During screenshot display, do NOT exit screenshot mode or overwrite screen with dashboard!
@@ -400,13 +501,13 @@ void loop() {
             if (isShowingScreenshot) {
                 isShowingScreenshot = false;
                 renderUI(true);
-                Serial.println("EVENT:DASHBOARD");
+                sendLine("EVENT:DASHBOARD");
             }
         }
     } else {
         if (M5.BtnP.wasReleased()) {
             if (!longPressHandled) {
-                Serial.println("EVENT:BTN_PUSH");
+                sendLine("EVENT:BTN_PUSH");
                 lastTouchInfo = "Wheel Click";
                 // Short click requests a fresh screenshot from Android
             }
@@ -415,14 +516,14 @@ void loop() {
     }
 
     if (M5.BtnL.wasPressed()) {
-        Serial.println("EVENT:BTN_UP");
+        sendLine("EVENT:BTN_UP");
         lastTouchInfo = "Key UP";
         if (!isShowingScreenshot) {
             renderUI(false);
         }
     }
     if (M5.BtnR.wasPressed()) {
-        Serial.println("EVENT:BTN_DOWN");
+        sendLine("EVENT:BTN_DOWN");
         lastTouchInfo = "Key DOWN";
         if (!isShowingScreenshot) {
             renderUI(false);
