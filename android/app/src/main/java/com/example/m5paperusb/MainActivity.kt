@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,7 +39,9 @@ import androidx.core.content.ContextCompat
 import com.example.m5paperusb.ui.theme.M5PaperUsbCompanionTheme
 import android.provider.Settings
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -87,7 +90,12 @@ class MainActivity : ComponentActivity() {
                     onConnectWifiClick = { ssid, password ->
                         usbController.connectWifi(ssid, password)
                     },
-                    onSend = { cmd -> usbController.sendLine(cmd) }
+                    onSend = { cmd ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            usbController.sendLine(cmd)
+                        }
+                        true
+                    }
                 )
             }
         }
@@ -177,7 +185,9 @@ fun MainScreen(
         }
         coroutineScope.launch {
             addLog(Direction.INFO, "Acquisizione screenshot e invio verso M5Paper...")
-            val success = screenshotManager.captureAndSend()
+            val success = withContext(Dispatchers.IO) {
+                screenshotManager.captureAndSend()
+            }
             if (success) {
                 addLog(Direction.INFO, "Screenshot inviato e visualizzato a schermo intero su M5Paper!")
             } else {
